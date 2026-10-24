@@ -388,7 +388,7 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
             if st.button("Read this photo", key="read_photo"):
                 img_bytes = photo.getvalue()
                 result = ai.call_ai(
-                    task="extract_care_plan",
+                    task="care_plan",
                     image_bytes=img_bytes,
                     mime_type=photo.type,
                 )
@@ -413,7 +413,7 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
             if not pasted.strip():
                 st.warning("Paste some text first.")
             else:
-                result = ai.call_ai(task="extract_care_plan", text=pasted)
+                result = ai.call_ai(task="care_plan", text=pasted)
                 if result.get("mode") == "unavailable":
                     items = parse_care_plan_text(pasted, condition)
                     if items:
