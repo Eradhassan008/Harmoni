@@ -491,6 +491,8 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
 
     # --- (1) Photo upload --------------------------------------------
     with tab_photo:
+        st.caption("A photo is read by AI only when a vision-capable model is "
+                   "configured. Otherwise, use Paste text or Manual entry.")
         photo = st.file_uploader(
             "Upload a photo of your care plan (JPG or PNG)",
             type=["jpg", "jpeg", "png"],
@@ -504,7 +506,20 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
                     image_bytes=img_bytes,
                     mime_type=photo.type,
                 )
-                _handle_ai_result(result, condition)
+                if result.get("mode") == "unavailable":
+                    # No vision-capable model: fall back to manual entry
+                    # with a clear message (never guess from the image).
+                    st.warning(
+                        result.get("warning")
+                        or "This build cannot read photos (no vision-capable AI "
+                           "model configured). Please type your plan in the "
+                           "Manual entry tab, or paste its text in Paste text."
+                    )
+                    st.info("Switch to the Manual entry or Paste text tab to "
+                            "continue - your items will still appear in the "
+                            "review table below before anything is confirmed.")
+                else:
+                    _handle_ai_result(result, condition)
 
     # --- (2) Paste text (with load buttons) --------------------------
     with tab_paste:
@@ -772,9 +787,34 @@ def page_daily_journal() -> None:
 
     # --- Note, symptoms, period --------------------------------------
     st.markdown("### Today's journal")
-    note = st.text_area("Free-text note", key="journal_note")
+    note = st.text_area("Free-text note (your original words are kept)",
+                        key="journal_note")
+
+    # Optional AI symptom extraction from the note. The original note text
+    # is never changed; extracted symptoms are only a suggestion the
+    # patient must review and can edit or clear.
+    if st.button("Extract symptoms from my note", key="journal_extract"):
+        if not note.strip():
+            st.warning("Write a note first, or just type symptoms below.")
+        else:
+            res = ai.call_ai(task="journal", text=note)
+            if res.get("mode") == "unavailable":
+                st.info("AI not connected - enter symptoms manually below.")
+            else:
+                if res.get("mode") == "demo":
+                    st.warning("Sample extraction - not from an AI model. "
+                               "Please check every symptom.")
+                found = (res.get("data") or {}).get("symptoms", []) or []
+                st.session_state["journal_symptoms"] = ", ".join(found)
+                st.success(
+                    f"Extracted {len(found)} symptom(s) - review and correct "
+                    "them below before saving."
+                )
+
+    if "journal_symptoms" not in st.session_state:
+        st.session_state["journal_symptoms"] = ""
     symptoms = st.text_input(
-        "Symptoms (comma separated, e.g. fatigue, acne, cramps)",
+        "Symptoms (comma separated) - review extracted, add or correct",
         key="journal_symptoms",
     )
     cycle_started = st.checkbox("My period started today", key="journal_cycle")
@@ -973,6 +1013,80 @@ def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     )
 
 
+def _build_ai_observations(metrics: dict, summary: str) -> str:
+    """Build AI-labelled observations: notable PATTERNS found in the data
+    plus a few neutral questions to ask the doctor.
+
+    Everything here is derived from the computed metrics (a dip in the
+    weekly series, a change between the first and last windows) or is a
+    neutral, non-clinical question. It states NO diagnosis and NO treatment
+    advice. We first offer the shared AI layer the summary; whatever it
+    returns is appended as a labelled note, never presented as clinical fact.
+    """
+    lines = []
+
+    # 1) Notable patterns detected in the weekly adherence/sleep-ish series.
+    adh = [(w["week"], w["adherence"]) for w in metrics.get("weekly", {}).get("adherence", [])
+           if w.get("adherence") is not None]
+    patterns = []
+    if len(adh) >= 3:
+        # Find the lowest adherence week (e.g. the mid-September dip).
+        low_week, low_val = min(adh, key=lambda kv: kv[1])
+        avg = sum(v for _, v in adh) / len(adh)
+        if low_val < avg - 0.12:  # a real dip, not noise
+            patterns.append(
+                f"Task adherence dipped around the week of {low_week} "
+                f"({round(low_val * 100)}%, below the ~{round(avg * 100)}% average)."
+            )
+    fat = [w["avg_fatigue_1to5"] for w in metrics.get("weekly", {}).get("fatigue", [])
+           if w.get("avg_fatigue_1to5") is not None]
+    if len(fat) >= 3 and fat[-1] < fat[0]:
+        patterns.append(f"Average fatigue trended down over time ({fat[0]} -> {fat[-1]} of 5).")
+    acne = [w["avg_acne_1to5"] for w in metrics.get("weekly", {}).get("acne", [])
+            if w.get("avg_acne_1to5") is not None]
+    if len(acne) >= 3 and acne[-1] < acne[0]:
+        patterns.append(f"Average acne trended down over time ({acne[0]} -> {acne[-1]} of 5).")
+    comp = metrics.get("comparison")
+    if comp and comp.get("first_30_days", {}).get("adherence") is not None \
+            and comp.get("last_30_days", {}).get("adherence") is not None:
+        f = round(comp["first_30_days"]["adherence"] * 100)
+        l = round(comp["last_30_days"]["adherence"] * 100)
+        patterns.append(f"Adherence changed from {f}% (first 30 days) to {l}% (last 30 days).")
+
+    if patterns:
+        lines.append("Notable patterns in your logged data:")
+        lines.extend(f"- {p}" for p in patterns)
+    else:
+        lines.append("No strong patterns stood out in the logged data yet.")
+
+    # 2) A few neutral questions to ask the doctor (no diagnosis/advice).
+    questions = [
+        "Are my current cycle lengths and their change over time expected for me?",
+        "Does the dip in my routine during the busy week need any follow-up?",
+        "Is my medication timing (morning vs dinner) working as intended?",
+        "Should any of my tracked symptoms (fatigue, acne) prompt a lab check?",
+        "How often should I log to make these summaries most useful to you?",
+    ]
+    lines.append("")
+    lines.append("Questions you might ask your doctor:")
+    lines.extend(f"- {q}" for q in questions[:5])
+
+    # 3) Offer the shared AI layer the records summary; append if it answers.
+    try:
+        res = ai.call_ai(task="summary", text=summary)
+        if res.get("mode") == "demo":
+            extra = (res.get("data") or {}).get("summary", "")
+            if extra:
+                lines.append("")
+                lines.append("AI note (sample output, not from a live model): " + extra)
+    except Exception:
+        pass
+
+    header = ("AI-generated observations - NOT a diagnosis and NOT treatment "
+              "advice. Please discuss with your care team.\n\n")
+    return header + "\n".join(lines)
+
+
 def page_doctor_summary(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     st.subheader("Doctor Summary")
 
@@ -1047,28 +1161,25 @@ def page_doctor_summary(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     else:
         st.info("No weekly records in this period.")
 
-    # Section 2: AI observations (only when the AI layer produced some).
+    # Section 2: AI observations - notable patterns + doctor questions,
+    # clearly labelled AI-generated, with no diagnosis or treatment advice.
     st.markdown("#### AI observations")
-    ai_text = "AI observations are not generated in this build."
-    try:
-        ai_res = ai.call_ai(task="summary", text=summary)
-        if ai_res.get("mode") == "unavailable":
-            ai_text = "AI not connected - this report contains only your logged records."
-        elif ai_res.get("mode") == "demo":
-            ai_text = ("Sample output - not generated from your document. "
-                       + (ai_res.get("data") or {}).get("summary", ""))
-        else:
-            ai_text = (ai_res.get("data") or {}).get("summary", "") or ai_text
-    except Exception:
-        ai_text = "AI not connected - this report contains only your logged records."
-    st.markdown(f'<div class="harmoni-card">{ai_text}</div>', unsafe_allow_html=True)
+    ai_observations = _build_ai_observations(metrics, summary)
+    st.markdown(
+        f'<div class="harmoni-card">{ai_observations.replace(chr(10), "<br>")}</div>',
+        unsafe_allow_html=True,
+    )
 
     # --- Downloads -------------------------------------------------
     st.markdown("### Download reports")
+    # The PDF gets the records summary AND the AI observations text, plus the
+    # confirmed care tasks and journal entries.
+    pdf_summary = summary + "\n\n" + ai_observations
     try:
         pdf_bytes = analytics.make_doctor_pdf(
             metrics, care_tasks=care_tasks,
-            journal_entries=st.session_state.get("journal_entries"), summary=summary,
+            journal_entries=st.session_state.get("journal_entries"),
+            summary=pdf_summary,
         )
         csv_bytes = analytics.make_doctor_csv(
             metrics, care_tasks=care_tasks,
