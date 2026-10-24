@@ -57,6 +57,27 @@ def load_care_plan(condition: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _ensure_history(daily_log, cycles):
+    """Return non-empty history frames when the CSVs exist on disk.
+
+    The cached loaders can hold an EMPTY frame if they first ran before
+    the demo CSVs were present (Streamlit caches the empty result for the
+    life of the process). This re-reads the files directly in that case,
+    so Insights and Doctor Summary always see the synthetic history.
+    """
+    if (daily_log is None or daily_log.empty) and DAILY_LOG_CSV.exists():
+        try:
+            daily_log = pd.read_csv(DAILY_LOG_CSV, parse_dates=["date"])
+        except Exception:
+            pass
+    if (cycles is None or cycles.empty) and CYCLES_CSV.exists():
+        try:
+            cycles = pd.read_csv(CYCLES_CSV, parse_dates=["cycle_start"])
+        except Exception:
+            pass
+    return daily_log, cycles
+
+
 # ----------------------------------------------------------------------
 # Session state. All in-session data lives here (nothing hits disk):
 #   care_tasks       -> list of confirmed care items (dicts)
@@ -846,6 +867,11 @@ def page_daily_journal() -> None:
 def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     st.subheader("Insights")
 
+    # Guard against a stale empty cache: if the cached frame is empty but
+    # the CSV exists on disk, re-read it directly so the synthetic demo
+    # history is always used.
+    daily_log, cycles = _ensure_history(daily_log, cycles)
+
     if daily_log.empty and cycles.empty:
         st.warning("No data files found in data/. Add daily_log.csv and cycles.csv.")
         return
@@ -857,12 +883,15 @@ def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
             and hasattr(analytics, "make_patient_summary")):
         st.info("Analytics not connected yet.")
         return
+
+    new_entries = st.session_state.get("journal_entries") or []
+    new_logs = st.session_state.get("task_logs") or []
     try:
         metrics = analytics.build_metrics(
             daily_log,
             cycles,
-            task_logs=st.session_state.get("task_logs"),
-            journal_entries=st.session_state.get("journal_entries"),
+            task_logs=new_logs,
+            journal_entries=new_entries,
         )
     except Exception as exc:  # analytics not wired up / broke
         st.info("Analytics not connected yet.")
@@ -874,6 +903,16 @@ def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
         for n in metrics.get("notes", []):
             st.caption(n)
         return
+
+    # Data provenance labels.
+    st.markdown(
+        f'<div class="harmoni-card">Includes {len(daily_log)} days of synthetic '
+        f'demo history for Aisha (fictional).</div>',
+        unsafe_allow_html=True,
+    )
+    if new_entries or new_logs:
+        st.caption(f"Your new entries: {len(new_entries)} journal entry(ies), "
+                   f"{len(new_logs)} task log(s) this session.")
 
     rng = metrics.get("date_range", {})
     if rng.get("start") and rng.get("end"):
@@ -937,9 +976,20 @@ def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
 def page_doctor_summary(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     st.subheader("Doctor Summary")
 
+    # Same stale-cache safeguard as Insights.
+    daily_log, cycles = _ensure_history(daily_log, cycles)
+
     if daily_log.empty and cycles.empty:
         st.warning("No data files found in data/. Add daily_log.csv and cycles.csv.")
         return
+
+    st.caption(f"Includes {len(daily_log)} days of synthetic demo history for "
+               f"Aisha (fictional).")
+    _new_entries = st.session_state.get("journal_entries") or []
+    _new_logs = st.session_state.get("task_logs") or []
+    if _new_entries or _new_logs:
+        st.caption(f"Your new entries: {len(_new_entries)} journal entry(ies), "
+                   f"{len(_new_logs)} task log(s) this session.")
 
     # --- Period filter: 30 days, 90 days, or all -------------------
     period = st.radio(
