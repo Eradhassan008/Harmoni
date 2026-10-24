@@ -483,6 +483,36 @@ def inject_theme() -> None:
             border: none; border-radius: 12px; font-weight: 600; padding: 0.5rem 1rem;
           }
           .stButton > button:hover, .stDownloadButton > button:hover { background: #553c73; color:#ffffff; }
+          /* Purple buttons: force white text on every state and inner element,
+             but leave the light-background tile buttons alone. */
+          .stButton > button, .stButton > button:hover,
+          .stButton > button:focus, .stButton > button:active,
+          .stButton > button:focus-visible,
+          .stDownloadButton > button, .stDownloadButton > button:hover,
+          .stDownloadButton > button:focus, .stDownloadButton > button:active,
+          .stDownloadButton > button:focus-visible {
+            color: #ffffff !important;
+          }
+          .stButton > button *, .stDownloadButton > button * { color: #ffffff !important; }
+          /* Disabled buttons: readable grey text on light grey (overrides the
+             forced white above). */
+          .stButton > button:disabled, .stButton > button[disabled],
+          .stDownloadButton > button:disabled, .stDownloadButton > button[disabled] {
+            background: #ECE8F0 !important; color: #6B6478 !important;
+          }
+          .stButton > button:disabled *, .stButton > button[disabled] *,
+          .stDownloadButton > button:disabled *, .stDownloadButton > button[disabled] * {
+            color: #6B6478 !important;
+          }
+          /* Exception: the light-colored Home tiles keep their purple label. */
+          .harmoni-tilewrap .stButton > button,
+          .harmoni-tilewrap .stButton > button:hover,
+          .harmoni-tilewrap .stButton > button:focus,
+          .harmoni-tilewrap .stButton > button:active,
+          .harmoni-tilewrap .stButton > button:focus-visible,
+          .harmoni-tilewrap .stButton > button * {
+            color: var(--h-heading) !important;
+          }
 
           /* Alerts: tinted, dark text (scoped -- does not touch charts/icons) */
           [data-testid="stNotification"], .stAlert { color: var(--h-body) !important; border-radius: 12px; }
@@ -645,7 +675,7 @@ def chart_symptoms(fatigue_rows, acne_rows):
 
 def chart_cycles(lengths):
     """Chart C: completed cycle lengths in days (sage bars)."""
-    labels = [str(r.get("cycle_start")) for r in lengths]
+    labels = [str(r.get("cycle_start")).split(" ")[0].split("T")[0] for r in lengths]
     values = [r.get("length_days") for r in lengths]
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -879,17 +909,24 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
     if st.session_state["care_tasks"]:
         st.divider()
         st.markdown("### Today's checklist")
+        import re as _re
         grouped = group_tasks(st.session_state["care_tasks"])
+        shown = set()  # dedup: an item in two groups appears only once
         for cat in CATEGORIES:
             items = grouped[cat]
-            if not items:
+            # Only the items not already shown under an earlier group.
+            fresh = [it for it in items
+                     if it["instruction"] not in shown]
+            if not fresh:
                 continue
             st.markdown(f"**{cat}**")
-            for it in items:
-                timing = f" - {it['timing']}" if it.get("timing") else ""
+            for it in fresh:
+                shown.add(it["instruction"])
+                # Display text: drop any trailing Qty/Refills/Disp clause.
+                text = _re.split(r"\s+(?:Qty|Refills|Disp)\b", it["instruction"],
+                                 maxsplit=1)[0].strip()
                 st.markdown(
-                    f"- {it['instruction']}{timing}  "
-                    f"`{it['condition']}` `{it['kind']}`"
+                    f"- {text}  `{it['condition']}` `{it['kind']}`"
                 )
 
     # --- Demo storage: download / upload records as JSON -------------
@@ -1373,9 +1410,19 @@ def page_doctor_summary(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
              "tasks done": w["tasks_done"], "tasks total": w["tasks_total"]}
             for w in adh
         ])
-        st.dataframe(prev_df, use_container_width=True)
+        st.dataframe(prev_df, use_container_width=True, hide_index=True)
     else:
         st.info("No weekly records in this period.")
+
+    # Cycle stats are not limited by the report period filter.
+    _cyc = metrics.get("cycles", {})
+    if _cyc.get("count"):
+        _avg = _cyc.get("average_length_days")
+        st.caption(
+            f"Cycle stats (all-time): {_cyc['count']} recorded"
+            + (f", average {_avg} days" if _avg is not None else "")
+            + "."
+        )
 
     # Section 2: Observations - rule-based patterns + doctor questions
     # detected from the records, plus any real AI-layer text labelled by its
@@ -1502,7 +1549,7 @@ def page_home(daily_log, cycles, condition: str) -> None:
     hc, dc = st.columns([3, 1])
     with hc:
         st.markdown(
-            f'<div class="harmoni-welcome"><h1>Welcome back, Erad 👋</h1>'
+            f'<div class="harmoni-welcome"><h1>Welcome back, Aisha 👋</h1>'
             f'<p>Your personalized health companion for PCOS, thyroid & overall wellness.</p></div>',
             unsafe_allow_html=True,
         )
@@ -1581,7 +1628,7 @@ def page_home(daily_log, cycles, condition: str) -> None:
         rows = [
             "Manage symptoms",
             "Track cycle & hormones",
-            "Lifestyle & diet guidance",
+            "Follow-ups & lab tests",
             "Medication & supplement plan",
         ]
         items = ""
