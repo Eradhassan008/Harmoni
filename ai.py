@@ -284,6 +284,241 @@ def _make_summary(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Google Gemini live provider (optional; only used when explicitly configured)
+#   Fails safe: any error returns "unavailable" and never leaks credentials.
+# ---------------------------------------------------------------------------
+
+_GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+
+
+def _gemini_instructions(task: str) -> str:
+    """Return the system instruction for a task. Safety rules are explicit."""
+    if task == "care_plan":
+        return (
+            "You read a medical prescription or care plan (text and/or an image) "
+            "and extract its instructions EXACTLY as written. "
+            "Return ONLY JSON of the form "
+            '{"items": [{"instruction": str, "kind": str, "timing": str, '
+            '"condition": str, "categories": [str]}]}. '
+            "Rules you must obey: "
+            "1. NEVER invent a medication name, dose, frequency, or instruction. "
+            "Copy the physician's wording verbatim into 'instruction'. "
+            "2. If a dose, name, or schedule is unreadable or ambiguous, append "
+            "' (unresolved)' to that instruction so a human reviews it. "
+            "3. 'kind' is one of: medication, habit, follow-up. "
+            "4. 'timing' holds ONLY timing explicitly shown (e.g. 'every morning'); "
+            "otherwise an empty string. "
+            "5. 'condition' is PCOS, Thyroid, or unknown - only if clearly indicated. "
+            "6. 'categories' is any of Morning, Evening, Weekly, Upcoming that the "
+            "instruction supports; otherwise an empty list. "
+            "7. Do NOT diagnose and do NOT recommend changes. "
+            "If you can read nothing reliable, return {\"items\": []}."
+        )
+    if task == "journal":
+        return (
+            "You read a patient's free-text daily note and list ONLY symptoms the "
+            'patient explicitly mentions. Return ONLY JSON of the form '
+            '{"symptoms": [str], "mood": str, "period_start": bool}. '
+            "Never infer severity numbers, never add symptoms that are not stated, "
+            "never diagnose. 'mood' is a single word only if the patient states it, "
+            "else an empty string. 'period_start' is true only if the note says a "
+            "period started."
+        )
+    # summary
+    return (
+        "You summarise the supplied health records in plain language. "
+        'Return ONLY JSON of the form {"summary": str}. '
+        "Summarise ONLY what is provided. Make no diagnosis and no treatment "
+        "recommendation. State that this is a summary of logged records, not advice."
+    )
+
+
+def _clean_item(raw) -> Optional[dict]:
+    """Coerce one model item into the UI's expected shape, or drop it."""
+    if not isinstance(raw, dict):
+        return None
+    instruction = str(raw.get("instruction", "")).strip()
+    if not instruction:
+        return None
+    kind = str(raw.get("kind", "")).strip().lower()
+    if kind not in ("medication", "habit", "follow-up"):
+        kind = "habit"
+    timing = str(raw.get("timing", "")).strip()
+    condition = str(raw.get("condition", "")).strip()
+    if condition not in ("PCOS", "Thyroid", "unknown"):
+        condition = "unknown"
+    cats_in = raw.get("categories") or []
+    if isinstance(cats_in, str):
+        cats_in = [cats_in]
+    allowed = {"Morning", "Evening", "Weekly", "Upcoming"}
+    categories = [str(c).strip() for c in cats_in if str(c).strip() in allowed]
+    return {
+        "instruction": instruction,
+        "kind": kind,
+        "timing": timing,
+        "condition": condition,
+        "categories": categories,
+    }
+
+
+def _validate_gemini_data(task: str, payload, has_image: bool) -> Optional[dict]:
+    """Validate the model's JSON into the shared contract, or return None."""
+    if not isinstance(payload, dict):
+        return None
+    if task == "care_plan":
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        cleaned = [c for c in (_clean_item(i) for i in items) if c]
+        if not cleaned:
+            return None
+        return {"items": cleaned[:50]}
+    if task == "journal":
+        syms = payload.get("symptoms")
+        if not isinstance(syms, list):
+            syms = []
+        symptoms = [str(s).strip() for s in syms if str(s).strip()][:20]
+        mood = str(payload.get("mood", "")).strip()
+        period_start = payload.get("period_start", False)
+        return {
+            "symptoms": symptoms,
+            "mood": mood or UNRESOLVED,
+            "fatigue_mentioned": "fatigue" in [s.lower() for s in symptoms],
+            "acne_mentioned": "acne" in [s.lower() for s in symptoms],
+            "period_start": bool(period_start) if isinstance(period_start, bool) else False,
+            "severity_values": UNRESOLVED,
+        }
+    # summary
+    summary = payload.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    return {"summary": summary.strip()}
+
+
+def _gemini_text_from_rest(resp_json: dict) -> str:
+    """Pull the model's text out of a REST generateContent response."""
+    try:
+        cands = resp_json.get("candidates") or []
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        chunks = [p.get("text", "") for p in parts if isinstance(p, dict)]
+        return "".join(chunks)
+    except Exception:
+        return ""
+
+
+def _call_gemini_rest(task, model, key, instruction, text, image_bytes, mime_type):
+    """Call Gemini over REST with X-goog-api-key.
+
+    This path works with both AIza API keys and the newer AQ.* keys that
+    Google Cloud-managed accounts issue (the SDK rejects AQ.* keys). Uses
+    only the standard library so no extra dependency is required.
+    """
+    import json as _json
+    import base64
+    import urllib.request
+    import urllib.error
+
+    parts = [{"text": instruction}]
+    if text and text.strip():
+        parts.append({"text": "Patient document / logged facts:\n" + text.strip()})
+    if image_bytes:
+        parts.append({
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": base64.b64encode(image_bytes).decode("ascii"),
+            }
+        })
+    body = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0},
+    }
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        + model + ":generateContent"
+    )
+    req = urllib.request.Request(
+        url,
+        data=_json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-goog-api-key": key},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=90) as fh:
+        resp_json = _json.loads(fh.read().decode("utf-8"))
+    return _json.loads(_gemini_text_from_rest(resp_json) or "")
+
+
+def _call_gemini_sdk(task, model, key, instruction, text, image_bytes, mime_type):
+    """Call Gemini via the official SDK (AIza keys)."""
+    from google import genai
+    from google.genai import types
+    import json as _json
+
+    parts = [types.Part.from_text(text=instruction)]
+    if text and text.strip():
+        parts.append(types.Part.from_text(text="Patient document / logged facts:\n" + text.strip()))
+    if image_bytes:
+        parts.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+    client = genai.Client(api_key=key)
+    response = client.models.generate_content(
+        model=model,
+        contents=types.Content(role="user", parts=parts),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0
+        ),
+    )
+    return _json.loads(response.text or "")
+
+
+def _call_gemini(task: str, text: str, image_bytes, mime_type, config: dict) -> dict:
+    """Call Gemini and return the shared contract. Fails safe; no credential leak.
+
+    Routes by key type: AIza keys use the official SDK; AQ.* keys (issued by
+    Cloud-managed accounts, which the SDK refuses) use the REST endpoint with
+    the X-goog-api-key header, exactly as Google's own sample curl does.
+    """
+    key = (config.get("HARMONI_AI_API_KEY") or config.get("HARMONI_AI_TOKEN") or "").strip()
+    if not key:
+        return {"mode": "unavailable", "data": {},
+                "warning": "Gemini API key not configured."}
+    has_text = bool(text and text.strip())
+    if not has_text and not image_bytes:
+        return {"mode": "unavailable", "data": {}, "warning": "No input provided."}
+    if image_bytes and task != "care_plan":
+        return {"mode": "unavailable", "data": {},
+                "warning": "Image input is only supported for care plans."}
+    if image_bytes and mime_type not in ("image/png", "image/jpeg"):
+        return {"mode": "unavailable", "data": {},
+                "warning": "Please upload a JPG or PNG image."}
+    if image_bytes and len(image_bytes) > 8 * 1024 * 1024:
+        return {"mode": "unavailable", "data": {},
+                "warning": "Image exceeds the 8 MB demo limit."}
+
+    model = (config.get("HARMONI_AI_MODEL", "") or "").strip() or _GEMINI_DEFAULT_MODEL
+    instruction = _gemini_instructions(task)
+    use_rest = key.startswith("AQ.") or key.startswith("ya29.")
+
+    try:
+        if use_rest:
+            payload = _call_gemini_rest(task, model, key, instruction, text, image_bytes, mime_type)
+        else:
+            payload = _call_gemini_sdk(task, model, key, instruction, text, image_bytes, mime_type)
+        data = _validate_gemini_data(task, payload, bool(image_bytes))
+        if data is None:
+            return {"mode": "unavailable", "data": {},
+                    "warning": "Gemini returned no verified records. Enter information manually."}
+        return {"mode": "live", "data": data, "warning": None}
+    except ImportError:
+        return {"mode": "unavailable", "data": {},
+                "warning": "Gemini SDK is missing. Install dependencies from requirements.txt."}
+    except Exception:
+        # Intentionally avoid logging provider exceptions or credentials.
+        return {"mode": "unavailable", "data": {},
+                "warning": ("Gemini request did not succeed. Verify credentials, "
+                            "model access or quota; manual entry still works.")}
+
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
@@ -320,16 +555,17 @@ def call_ai(
 
     # --- live provider path --------------------------------------------
     if _provider_configured():
-        # A provider is configured by the project owner. We do not invent
-        # the vendor call here; wiring the actual request is done where the
-        # concrete provider/model is known. Until that concrete client is
-        # supplied, report unavailable rather than fabricate a response.
+        config = _load_secrets()
+        provider = config.get("HARMONI_AI_PROVIDER", "").strip().lower()
+        if provider == "gemini":
+            return _call_gemini(task, text, image_bytes, mime_type, config)
+        # A provider marker is set but this build only wires Gemini.
         return {
             "mode": "unavailable",
             "data": {},
             "warning": (
-                "An AI provider is configured but no concrete client is wired "
-                "in this build. No endpoint or model is assumed here."
+                "Configured AI provider is not supported by this build "
+                "(only 'gemini' is wired)."
             ),
         }
 
