@@ -8,6 +8,7 @@ and is intentionally left as stubs for now.
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 import ai  # noqa: F401  (stub module, wired for later use)
@@ -20,6 +21,36 @@ FOOTER = "Not medical advice. Always follow your care team's guidance."
 DATA_DIR = Path(__file__).parent / "data"
 DAILY_LOG_CSV = DATA_DIR / "daily_log.csv"
 CYCLES_CSV = DATA_DIR / "cycles.csv"
+CARE_PLAN_PCOS = DATA_DIR / "care_plan_pcos.txt"
+CARE_PLAN_THYROID = DATA_DIR / "care_plan_thyroid.txt"
+
+
+# ----------------------------------------------------------------------
+# Data loading. Reads the sample CSVs and care plans from data/.
+# Returns empty frames / strings when a file is missing, so the app
+# still runs. Cached so files are read once per session.
+# ----------------------------------------------------------------------
+@st.cache_data
+def load_daily_log() -> pd.DataFrame:
+    if not DAILY_LOG_CSV.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(DAILY_LOG_CSV, parse_dates=["date"])
+    return df
+
+
+@st.cache_data
+def load_cycles() -> pd.DataFrame:
+    if not CYCLES_CSV.exists():
+        return pd.DataFrame()
+    return pd.read_csv(CYCLES_CSV, parse_dates=["cycle_start"])
+
+
+@st.cache_data
+def load_care_plan(condition: str) -> str:
+    path = CARE_PLAN_PCOS if condition == "PCOS" else CARE_PLAN_THYROID
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
 
 
 # ----------------------------------------------------------------------
@@ -105,7 +136,21 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
     )
     st.subheader("Care Plan")
     st.caption(f"Condition: {condition} | Thyroid subtype: {thyroid_subtype}")
-    st.info("Care Plan content coming soon.")
+
+    plans = []
+    if condition in ("PCOS", "Both"):
+        plans.append(("PCOS", load_care_plan("PCOS")))
+    if condition in ("Thyroid", "Both"):
+        plans.append(("Thyroid", load_care_plan("Thyroid")))
+
+    shown = False
+    for label, text in plans:
+        if text:
+            shown = True
+            with st.expander(f"{label} care plan", expanded=True):
+                st.text(text)
+    if not shown:
+        st.info("No care plan file found in data/.")
 
 
 def page_daily_journal() -> None:
@@ -113,9 +158,33 @@ def page_daily_journal() -> None:
     st.info("Daily Journal content coming soon.")
 
 
-def page_insights() -> None:
+def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     st.subheader("Insights")
-    st.info("Insights content coming soon.")
+
+    if daily_log.empty and cycles.empty:
+        st.warning("No data files found in data/. Add daily_log.csv and cycles.csv.")
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            f'<div class="harmoni-card">Daily log rows<br><b>{len(daily_log)}</b></div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f'<div class="harmoni-card sage">Cycles recorded<br><b>{len(cycles)}</b></div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("**Daily log** (first rows)")
+    st.dataframe(daily_log.head(10), use_container_width=True)
+    st.caption("Columns: " + ", ".join(daily_log.columns))
+
+    st.markdown("**Cycles**")
+    st.dataframe(cycles, use_container_width=True)
+
+    st.info("Charts and metrics come next; data is now wired in.")
 
 
 def page_doctor_summary() -> None:
@@ -153,12 +222,15 @@ def main() -> None:
             options=["Care Plan", "Daily Journal", "Insights", "Doctor Summary"],
         )
 
+    daily_log = load_daily_log()
+    cycles = load_cycles()
+
     if destination == "Care Plan":
         page_care_plan(condition, thyroid_subtype)
     elif destination == "Daily Journal":
         page_daily_journal()
     elif destination == "Insights":
-        page_insights()
+        page_insights(daily_log, cycles)
     elif destination == "Doctor Summary":
         page_doctor_summary()
 
