@@ -516,6 +516,23 @@ def inject_theme() -> None:
           .tile-blue { background: var(--h-blue); }
           .tile-peach{ background: var(--h-blush); }
 
+          /* Tile-as-button: the whole colored card is clickable */
+          .harmoni-tilewrap { border-radius: 18px; margin-bottom: 0.2rem; }
+          .harmoni-tilewrap .stButton > button {
+            background: transparent; color: var(--h-heading);
+            border: 1px solid var(--h-border); border-radius: 18px;
+            min-height: 92px; font-weight: 800; white-space: pre-line;
+            text-align: left; padding: 1rem 1.1rem;
+            box-shadow: 0 6px 18px rgba(103, 75, 134, 0.08);
+          }
+          .harmoni-tilewrap.tile-lav  .stButton > button { background: #efe6f8; }
+          .harmoni-tilewrap.tile-sage .stButton > button { background: var(--h-sage); }
+          .harmoni-tilewrap.tile-blue .stButton > button { background: var(--h-blue); }
+          .harmoni-tilewrap.tile-peach .stButton > button { background: var(--h-blush); }
+          .harmoni-tilewrap .stButton > button:hover {
+            filter: brightness(0.97); color: var(--h-heading);
+          }
+
           .harmoni-stat {
             border-radius: 16px; padding: 0.85rem 1rem; text-align: left;
             box-shadow: 0 4px 14px rgba(103, 75, 134, 0.06);
@@ -552,7 +569,7 @@ def render_footer() -> None:
 # ----------------------------------------------------------------------
 # Navigation helper (dashboard cards + sidebar stay in sync).
 # ----------------------------------------------------------------------
-NAV_PAGES = ["Home", "Care Plan", "Daily Journal", "Insights", "Doctor Summary", "Backup"]
+NAV_PAGES = ["Home", "Care Plan", "Daily Journal", "Insights", "Doctor Summary"]
 
 
 def go_to(destination: str) -> None:
@@ -1506,13 +1523,11 @@ def page_home(daily_log, cycles, condition: str) -> None:
     ]
     for col, css, label, name, dest in tiles:
         with col:
-            st.markdown(
-                f'<div class="harmoni-tile {css}"><div class="label">{label}</div>'
-                f'<div class="name">{name} →</div></div>',
-                unsafe_allow_html=True,
-            )
-            st.button(f"Open {name}", key=f"tile_{dest}",
+            # The tile IS the button -- clicking the colored card navigates.
+            st.markdown(f'<div class="harmoni-tilewrap {css}">', unsafe_allow_html=True)
+            st.button(f"{label}\n\n{name} →", key=f"tile_{dest}",
                       use_container_width=True, on_click=go_to, args=(dest,))
+            st.markdown('</div>', unsafe_allow_html=True)
 
     st.write("")
 
@@ -1523,7 +1538,7 @@ def page_home(daily_log, cycles, condition: str) -> None:
         glance = (
             f'<div class="harmoni-big-metric"><div class="pct">'
             f'{adh_pct if adh_pct is not None else "--"}%</div>'
-            f'<div class="sub">Overall Adherence</div></div>'
+            f'<div class="sub">Latest Weekly Adherence</div></div>'
         )
         # Latest fatigue/acne as plain read-outs (no invented deltas).
         fat = weekly.get("fatigue", [])
@@ -1604,13 +1619,13 @@ def page_home(daily_log, cycles, condition: str) -> None:
         care_tasks = st.session_state.get("care_tasks") or []
         done = sum(1 for t in care_tasks if t.get("status") == "OK")
         total = len(care_tasks)
-        head = f"{done} of {total} confirmed" if total else "No care plan yet"
+        head = f"{done} of {total} confirmed in your plan" if total else "No care plan yet"
         rows_html = ""
         if care_tasks:
             for t in care_tasks[:5]:
                 ok = t.get("status") == "OK"
-                mark = ('<span class="tick">✓</span>' if ok
-                        else '<span class="pending">○</span>')
+                mark = ('<span class="tick">confirmed</span>' if ok
+                        else '<span class="pending">under review</span>')
                 instr = (t.get("instruction") or "")[:48]
                 rows_html += (f'<div class="harmoni-row"><span>{instr}</span>{mark}</div>')
         else:
@@ -1618,7 +1633,8 @@ def page_home(daily_log, cycles, condition: str) -> None:
                          'your checklist.</span></div>')
         st.markdown(
             f'<div class="harmoni-card"><div class="harmoni-title">Today\'s Care Plan</div>'
-            f'<div style="opacity:0.7;font-size:0.85rem;margin-bottom:0.4rem;">{head}</div>'
+            f'<div style="color:var(--h-secondary);font-size:0.82rem;margin-bottom:0.4rem;">'
+            f'{head} &middot; these are your plan items, not today\'s completion</div>'
             f'{rows_html}</div>',
             unsafe_allow_html=True,
         )
@@ -1682,8 +1698,6 @@ def main() -> None:
         page_insights(daily_log, cycles)
     elif destination == "Doctor Summary":
         page_doctor_summary(daily_log, cycles)
-    elif destination == "Backup":
-        page_json_backup()
 
     render_footer()
 
