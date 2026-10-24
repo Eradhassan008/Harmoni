@@ -483,6 +483,26 @@ def inject_theme() -> None:
             border: none; border-radius: 12px; font-weight: 600; padding: 0.5rem 1rem;
           }
           .stButton > button:hover, .stDownloadButton > button:hover { background: #553c73; color:#ffffff; }
+          /* Purple buttons: force white text on every state and inner element,
+             but leave the light-background tile buttons alone. */
+          .stButton > button, .stButton > button:hover,
+          .stButton > button:focus, .stButton > button:active,
+          .stButton > button:focus-visible,
+          .stDownloadButton > button, .stDownloadButton > button:hover,
+          .stDownloadButton > button:focus, .stDownloadButton > button:active,
+          .stDownloadButton > button:focus-visible {
+            color: #ffffff !important;
+          }
+          .stButton > button *, .stDownloadButton > button * { color: #ffffff !important; }
+          /* Exception: the light-colored Home tiles keep their purple label. */
+          .harmoni-tilewrap .stButton > button,
+          .harmoni-tilewrap .stButton > button:hover,
+          .harmoni-tilewrap .stButton > button:focus,
+          .harmoni-tilewrap .stButton > button:active,
+          .harmoni-tilewrap .stButton > button:focus-visible,
+          .harmoni-tilewrap .stButton > button * {
+            color: var(--h-heading) !important;
+          }
 
           /* Alerts: tinted, dark text (scoped -- does not touch charts/icons) */
           [data-testid="stNotification"], .stAlert { color: var(--h-body) !important; border-radius: 12px; }
