@@ -63,7 +63,8 @@ def load_care_plan(condition: str) -> str:
 # ----------------------------------------------------------------------
 CATEGORIES = ["Morning", "Evening", "Weekly", "Upcoming appointments"]
 ITEM_KINDS = ["medication", "habit", "follow-up"]
-CONDITION_TAGS = ["PCOS", "Thyroid"]
+# "unknown" lets the patient choose when the source did not say which condition.
+CONDITION_TAGS = ["PCOS", "Thyroid", "unknown"]
 
 
 def init_state() -> None:
@@ -81,73 +82,204 @@ def init_state() -> None:
             st.session_state[key] = val
 
 
-def _guess_category(text: str, kind: str) -> str:
-    """Best-effort grouping of an instruction into a checklist bucket.
+# ----------------------------------------------------------------------
+# Grouping. A single item may belong to MORE THAN ONE group, so every
+# item carries a list of categories. Timing words decide the groups.
+# ----------------------------------------------------------------------
+def categories_from_timing(text: str, kind: str) -> list:
+    """Pick one or more checklist groups from timing/instruction words.
 
-    Keeps the original wording; only picks which group it shows under.
+    Returns a list (an item can be in both Morning and Evening). Never
+    empty: falls back to ["Morning"].
     """
     low = text.lower()
+
+    # Follow-ups always live under appointments.
     if kind == "follow-up" or any(
-        w in low for w in ["follow-up", "return visit", "blood test", "blood work",
-                            "appointment", "referral", "repeat"]
+        w in low for w in ["follow-up", "return visit", "blood test", "lab test",
+                            "blood work", "appointment", "referral", "repeat", "visit"]
     ):
-        return "Upcoming appointments"
-    if any(w in low for w in ["week", "weekly", "5 days", "per week"]):
-        return "Weekly"
-    if any(w in low for w in ["morning", "empty stomach", "before breakfast",
-                              "before coffee", "every morning"]):
-        return "Morning"
-    if any(w in low for w in ["evening", "night", "bedtime", "dinner", "with dinner"]):
-        return "Evening"
-    return "Morning"
+        return ["Upcoming appointments"]
+
+    cats = []
+    twice = any(w in low for w in ["twice a day", "two times a day", "twice daily",
+                                   "2 times a day", "bid", "both morning"])
+    morning = any(w in low for w in ["morning", "breakfast", "a.m.", " am ", "empty stomach",
+                                     "before coffee"])
+    evening = any(w in low for w in ["dinner", "evening", "night", "bedtime", "p.m.",
+                                     " pm ", "supper"])
+
+    if twice or (morning and evening):
+        return ["Morning", "Evening"]
+    if morning:
+        cats.append("Morning")
+    if evening:
+        cats.append("Evening")
+    if any(w in low for w in ["weekly", "per week", "days per week", "days a week",
+                              "times a week", "once a week"]):
+        cats.append("Weekly")
+
+    return cats or ["Morning"]
 
 
-def _make_item(instruction: str, kind: str, timing: str, condition: str,
-               category: str = "") -> dict:
-    instruction = instruction.strip()
-    return {
-        "instruction": instruction,          # original wording, preserved
-        "kind": kind,
-        "timing": timing.strip(),
-        "condition": condition,
-        "category": category or _guess_category(instruction, kind),
-    }
+def needs_review(instruction: str, kind: str, timing: str) -> bool:
+    """Flag an item that a human must check before it is trusted.
 
-
-def parse_care_plan_text(text: str, condition: str) -> list:
-    """Turn pasted/loaded care-plan text into draft items.
-
-    Splits on numbered plan lines and keeps each line's ORIGINAL wording
-    as the instruction. This is the manual fallback used when the AI
-    layer is unavailable; it never guesses clinical content.
+    True when the text is uncertain (?, 'unclear', 'unreadable') or when
+    a medication has no clear dose AND no clear frequency. We NEVER fill
+    a missing dose/frequency in ourselves.
     """
     import re
 
+    blob = f"{instruction} {timing}".lower()
+    if "?" in blob or "unclear" in blob or "unreadable" in blob:
+        return True
+    if kind == "medication":
+        has_dose = bool(re.search(r"\b\d+\s*(mg|mcg|iu|tablet|tablets|capsule|capsules|pill|pills)\b", blob))
+        has_freq = any(w in blob for w in ["daily", "once", "twice", "morning", "night",
+                                           "evening", "dinner", "breakfast", "bedtime",
+                                           "per day", "a day", "weekly", "per week"])
+        if not (has_dose and has_freq):
+            return True
+    return False
+
+
+def _make_item(instruction: str, kind: str, timing: str, condition: str,
+               categories=None) -> dict:
+    instruction = instruction.strip()
+    timing = (timing or "").strip()
+    if not categories:
+        categories = categories_from_timing(f"{instruction} {timing}", kind)
+    if isinstance(categories, str):
+        categories = [c.strip() for c in categories.split(",") if c.strip()]
+    status = "Needs review" if needs_review(instruction, kind, timing) else "OK"
+    return {
+        "instruction": instruction,          # original wording, preserved
+        "kind": kind,
+        "timing": timing,
+        "condition": condition,
+        "categories": categories,
+        "status": status,
+    }
+
+
+# Headings a pasted prescription / plan may use.
+_RX_HEADING = ("rx", "prescription", "medications", "medication list")
+_CARE_HEADING = ("care instructions", "care plan", "habits", "lifestyle")
+_FOLLOWUP_HEADING = ("follow-up", "follow up", "appointments", "next visit")
+
+
+def _classify_line(body: str, section: str) -> str:
+    """Decide an item's type from the line and the section it sits under."""
+    import re
+
+    low = body.lower()
+    if any(w in low for w in ["blood test", "lab test", "follow-up", "follow up",
+                              "appointment", "visit", "referral", "repeat thyroid"]):
+        return "follow-up"
+    if section == "rx" or re.search(r"\b(mg|mcg|iu)\b", low) or any(
+        w in low for w in ["tablet", "capsule", "pill"]
+    ):
+        return "medication"
+    if section == "care":
+        return "habit"
+    return "habit"
+
+
+def _split_instruction_timing(body: str) -> tuple:
+    """Keep the full original wording as the instruction; copy the timing
+    phrase (if any) into the timing field. Original text is never altered."""
+    import re
+
+    timing = ""
+    m = re.search(
+        r"(once daily.*|twice (?:a day|daily).*|every morning.*|with dinner.*|"
+        r"before breakfast.*|at bedtime.*|\d+\s*(?:times?)\s*(?:a|per)\s*(?:day|week).*|"
+        r"on an empty stomach.*|every (?:morning|night|evening).*)",
+        body, flags=re.IGNORECASE,
+    )
+    if m:
+        timing = m.group(1).strip().rstrip(".")
+    return body.strip(), timing
+
+
+def parse_care_plan_text(text: str, condition: str) -> list:
+    """Basic (non-AI) reader for pasted prescription / care-plan text.
+
+    - Tracks section headings (Rx, Care instructions, Follow-up).
+    - Keeps each line's ORIGINAL wording in the instruction; copies any
+      timing phrase into timing.
+    - Classifies type by dose words / section / follow-up words.
+    - Reads a [PCOS] / [Thyroid] tag when present, else uses the selected
+      condition (or 'unknown' when 'Both' is selected).
+    - Groups by timing words (twice-daily -> Morning AND Evening).
+    - Never drops a care-instruction line; never guesses a dose.
+    """
+    import re
+
+    if condition == "Both":
+        default_tag = "unknown"
+    elif condition in ("PCOS", "Thyroid"):
+        default_tag = condition
+    else:
+        default_tag = "unknown"
+
     items = []
+    section = ""  # "rx" | "care" | "followup" | ""
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        m = re.match(r"^\s*\d+[.)]\s*(.+)$", line)
-        if not m:
+
+        low = line.lower().rstrip(":")
+        if low in _RX_HEADING or low.startswith("rx"):
+            section = "rx"
+            if low in _RX_HEADING or low == "rx":
+                continue
+        if any(low == h or low.startswith(h) for h in _CARE_HEADING):
+            section = "care"
+            if low in _CARE_HEADING:
+                continue
+        if any(low == h or low.startswith(h) for h in _FOLLOWUP_HEADING):
+            section = "followup"
+            if low in _FOLLOWUP_HEADING:
+                continue
+
+        # Strip a leading number/bullet but keep the body wording intact.
+        body = re.sub(r"^\s*(?:\d+[.)]|[-*•])\s*", "", line).strip()
+        if not body:
             continue
-        body = m.group(1).strip()
-        low = body.lower()
-        if low.startswith("medication") or "medication" in low[:20]:
-            kind = "medication"
-        elif any(w in low for w in ["follow-up", "return", "blood", "referral", "repeat visit"]):
-            kind = "follow-up"
-        else:
-            kind = "habit"
-        items.append(_make_item(body, kind, "", condition))
+        # Skip pure heading lines we already consumed.
+        if body.lower().rstrip(":") in (_RX_HEADING + _CARE_HEADING + _FOLLOWUP_HEADING):
+            continue
+
+        # Condition tag like [PCOS] / [Thyroid].
+        tag = default_tag
+        mtag = re.search(r"\[(pcos|thyroid)\]", body, flags=re.IGNORECASE)
+        if mtag:
+            tag = "PCOS" if mtag.group(1).lower() == "pcos" else "Thyroid"
+            body = re.sub(r"\s*\[(?:pcos|thyroid)\]\s*", " ", body,
+                          flags=re.IGNORECASE).strip()
+
+        kind = "follow-up" if section == "followup" else _classify_line(body, section)
+        instruction, timing = _split_instruction_timing(body)
+        items.append(_make_item(instruction, kind, timing, tag))
+
     return items
 
 
 def group_tasks(tasks: list) -> dict:
+    """Bucket tasks by category. An item with two categories appears in
+    both buckets."""
     grouped = {cat: [] for cat in CATEGORIES}
     for t in tasks:
-        grouped.get(t.get("category", "Morning"), grouped["Morning"]).append(t)
+        cats = t.get("categories") or ["Morning"]
+        if isinstance(cats, str):
+            cats = [c.strip() for c in cats.split(",") if c.strip()]
+        for c in cats:
+            grouped.get(c, grouped["Morning"]).append(t)
     return grouped
+
 
 
 
@@ -234,7 +366,12 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
     st.subheader("Care Plan")
     st.caption(f"Condition: {condition} | Thyroid subtype: {thyroid_subtype}")
 
-    default_tag = "Thyroid" if condition == "Thyroid" else "PCOS"
+    if condition == "PCOS":
+        default_tag = "PCOS"
+    elif condition == "Thyroid":
+        default_tag = "Thyroid"
+    else:
+        default_tag = "unknown"
 
     tab_photo, tab_paste, tab_manual = st.tabs(
         ["Photo upload", "Paste text", "Manual entry"]
@@ -255,7 +392,7 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
                     image_bytes=img_bytes,
                     mime_type=photo.type,
                 )
-                _handle_ai_result(result, default_tag)
+                _handle_ai_result(result, condition)
 
     # --- (2) Paste text (with load buttons) --------------------------
     with tab_paste:
@@ -278,17 +415,20 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
             else:
                 result = ai.call_ai(task="extract_care_plan", text=pasted)
                 if result.get("mode") == "unavailable":
-                    st.info("AI not connected - reading the numbered lines manually.")
-                    items = parse_care_plan_text(pasted, default_tag)
+                    items = parse_care_plan_text(pasted, condition)
                     if items:
                         st.session_state["care_draft"] = items
+                        st.warning(
+                            "Read by basic text reader (not AI) - please check "
+                            "every item."
+                        )
                         st.success(f"Found {len(items)} item(s). Review below.")
                     else:
                         st.warning(
-                            "No numbered plan lines found. Use Manual entry to add items."
+                            "No care items found. Use Manual entry to add items."
                         )
                 else:
-                    _handle_ai_result(result, default_tag)
+                    _handle_ai_result(result, condition)
 
     # --- (3) Manual entry --------------------------------------------
     with tab_manual:
@@ -296,13 +436,18 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
             instruction = st.text_input("Instruction (exact wording)")
             kind = st.selectbox("Type", ITEM_KINDS)
             timing = st.text_input("Timing (e.g. 'every morning, empty stomach')")
-            tag = st.selectbox("Condition", CONDITION_TAGS,
-                               index=CONDITION_TAGS.index(default_tag)
-                               if default_tag in CONDITION_TAGS else 0)
-            category = st.selectbox("Show under", CATEGORIES)
+            tag = st.selectbox(
+                "Condition", CONDITION_TAGS,
+                index=CONDITION_TAGS.index(default_tag)
+                if default_tag in CONDITION_TAGS else 0,
+            )
+            cats = st.multiselect(
+                "Show under (pick one or more)", CATEGORIES,
+                help="Twice-daily items can go in both Morning and Evening.",
+            )
             if st.form_submit_button("Add item") and instruction.strip():
                 st.session_state["care_draft"].append(
-                    _make_item(instruction, kind, timing, tag, category)
+                    _make_item(instruction, kind, timing, tag, cats or None)
                 )
                 st.success("Added to review below.")
 
@@ -313,7 +458,30 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
     if not draft:
         st.caption("No draft items yet. Add some above.")
     else:
-        draft_df = pd.DataFrame(draft)
+        # Flatten categories list -> comma string for editing.
+        rows = []
+        for it in draft:
+            cats = it.get("categories") or ["Morning"]
+            if isinstance(cats, str):
+                cats = [c.strip() for c in cats.split(",") if c.strip()]
+            rows.append({
+                "instruction": it["instruction"],
+                "kind": it["kind"],
+                "timing": it.get("timing", ""),
+                "condition": it.get("condition", "unknown"),
+                "groups": ", ".join(cats),
+                "status": it.get("status", "OK"),
+            })
+        draft_df = pd.DataFrame(rows)
+
+        def _hl(row):
+            color = "background-color: #f6d6d6" if row["status"] == "Needs review" else ""
+            return [color] * len(row)
+
+        st.caption(
+            "Highlighted rows need review. Groups accepts more than one, "
+            "comma separated (e.g. 'Morning, Evening')."
+        )
         edited = st.data_editor(
             draft_df,
             num_rows="dynamic",
@@ -323,15 +491,53 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
                 "kind": st.column_config.SelectboxColumn("Type", options=ITEM_KINDS),
                 "timing": st.column_config.TextColumn("Timing"),
                 "condition": st.column_config.SelectboxColumn("Condition", options=CONDITION_TAGS),
-                "category": st.column_config.SelectboxColumn("Group", options=CATEGORIES),
+                "groups": st.column_config.TextColumn("Groups (comma separated)"),
+                "status": st.column_config.SelectboxColumn("Status", options=["OK", "Needs review"]),
             },
             key="care_editor",
         )
+
+        # Re-evaluate status from edits: re-flag anything still uncertain,
+        # but respect a human who cleared a row to "OK" after editing it.
+        records = edited.to_dict("records")
+        needs = []
+        for r in records:
+            auto_flag = needs_review(r.get("instruction", ""), r.get("kind", ""),
+                                     r.get("timing", ""))
+            # If the row still trips the auto check, it stays "Needs review"
+            # regardless of what the editor shows.
+            if auto_flag:
+                r["status"] = "Needs review"
+            if r.get("status") == "Needs review":
+                needs.append(r.get("instruction", "(blank)"))
+
+        st.dataframe(edited.style.apply(_hl, axis=1), use_container_width=True)
         st.caption("Nothing is saved until you click Confirm.")
-        if st.button("Confirm care plan", type="primary"):
-            st.session_state["care_tasks"] = edited.to_dict("records")
-            st.session_state["care_draft"] = []
-            st.success("Care plan confirmed.")
+
+        if needs:
+            st.error(
+                "Fix or remove these rows before confirming (unclear text, or a "
+                "medication with no clear dose/frequency). I will not fill in a "
+                "dose or frequency for you:\n\n- " + "\n- ".join(needs)
+            )
+            st.button("Confirm care plan", type="primary", disabled=True)
+        else:
+            if st.button("Confirm care plan", type="primary"):
+                confirmed = []
+                for r in records:
+                    cats = [c.strip() for c in str(r.get("groups", "")).split(",")
+                            if c.strip()] or ["Morning"]
+                    confirmed.append({
+                        "instruction": r.get("instruction", "").strip(),
+                        "kind": r.get("kind", "habit"),
+                        "timing": r.get("timing", "").strip(),
+                        "condition": r.get("condition", "unknown"),
+                        "categories": cats,
+                        "status": "OK",
+                    })
+                st.session_state["care_tasks"] = confirmed
+                st.session_state["care_draft"] = []
+                st.success("Care plan confirmed.")
 
     # --- Today's checklist (after confirm) ---------------------------
     if st.session_state["care_tasks"]:
@@ -351,15 +557,26 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
                 )
 
 
-def _handle_ai_result(result: dict, default_tag: str) -> None:
+def _handle_ai_result(result: dict, condition: str) -> None:
     """Route a call_ai result. On 'unavailable', keep the manual path."""
     mode = result.get("mode")
     if mode == "unavailable":
         st.info("AI not connected - enter manually using the Manual entry tab "
                 "or paste text and read the numbered lines.")
         return
+
+    if condition == "Both":
+        default_tag = "unknown"
+    elif condition in ("PCOS", "Thyroid"):
+        default_tag = condition
+    else:
+        default_tag = "unknown"
+
+    if mode == "demo":
+        st.warning("Sample output - not generated from your document.")
     if result.get("warning"):
         st.warning(result["warning"])
+
     items = (result.get("data") or {}).get("items", [])
     if not items:
         st.info("The AI returned no items. Add them manually instead.")
@@ -370,7 +587,7 @@ def _handle_ai_result(result: dict, default_tag: str) -> None:
             i.get("kind", "habit"),
             i.get("timing", ""),
             i.get("condition", default_tag),
-            i.get("category", ""),
+            i.get("categories") or i.get("category") or None,
         )
         for i in items
     ]
@@ -538,14 +755,15 @@ def main() -> None:
         condition = st.radio(
             "Your condition",
             options=["PCOS", "Thyroid", "Both"],
-            index=2,
+            index=2,  # demo default: Both
         )
 
         thyroid_subtype = "n/a"
         if condition in ("Thyroid", "Both"):
             thyroid_subtype = st.selectbox(
                 "Thyroid type (self-reported)",
-                options=["hypothyroidism", "hyperthyroidism", "other"],
+                options=["Hypothyroidism", "Hyperthyroidism", "Other"],
+                index=0,  # demo default: Hypothyroidism
             )
 
         st.divider()
