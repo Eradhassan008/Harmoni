@@ -1,0 +1,29 @@
+SAMPLE CARE PLAN (SYNTHETIC - FOR DEMO ONLY)
+Endocrinology / Women's Health Clinic
+Patient: Aisha K. (fictional)   Visit date: 05/25/2026
+Diagnosis: Polycystic ovary syndrome (PCOS)
+Clinician: Dr. R. Lee (fictional)
+
+Assessment:
+Patient presents with irregular cycles (40-60 days), acne along jawline, fatigue,
+and difficulty sleeping. Labs and ultrasound consistent with PCOS. Discussed
+long-term management plan; patient engaged and has questions about cycle tracking.
+
+Plan:
+1. Medication: Continue PCOS medication as prescribed, once daily with dinner.
+   Do not stop without discussing with clinic.
+2. Activity: Aim for a 30-minute walk or other movement you enjoy, 5 days per week.
+3. Sleep: Aim for 7-8 hours of sleep per night; keep a consistent bedtime.
+4. Cycle tracking: Record the first day of each period. Note any cycle longer
+   than 60 days and bring it up at follow-up.
+5. Symptom log: Track acne, fatigue, mood, and hair changes weekly.
+6. Stress: Try 10 minutes of a relaxing activity (stretching, breathing, journaling)
+   on stressful days.
+
+Follow-up:
+- Return visit in 3 months (late August 2026).
+- Blood work as ordered, 1-2 weeks before the return visit.
+- Dermatology referral for acne if no improvement by next visit.
+
+Call the clinic if: no period for more than 90 days, severe pelvic pain,
+or new symptoms that concern you.

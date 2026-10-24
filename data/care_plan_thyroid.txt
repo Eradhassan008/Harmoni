@@ -1,0 +1,28 @@
+SAMPLE CARE PLAN (SYNTHETIC - FOR DEMO ONLY)
+Primary Care Clinic
+Patient: Aisha K. (fictional)   Visit date: 06/02/2026
+Diagnosis: Hypothyroidism
+Clinician: Dr. M. Santos (fictional)
+
+Assessment:
+Thyroid blood test shows underactive thyroid. Patient reports tiredness,
+feeling cold, dry skin, and low mood. Starting thyroid hormone replacement.
+Patient also managed by endocrinology for PCOS; plans coordinated.
+
+Plan:
+1. Medication: Take thyroid medication as prescribed every morning on an empty
+   stomach, 30-60 minutes before breakfast or coffee.
+2. Keep thyroid medication separate from supplements such as iron or calcium,
+   as discussed at the visit.
+3. Take it at about the same time each day. If a dose is missed, follow the
+   instructions on your prescription label or call the pharmacy.
+4. Symptom check: Note energy level, feeling cold, and mood a few times a week.
+
+Follow-up:
+- Repeat thyroid blood test in 6-8 weeks (mid-to-late July 2026), then
+  as directed.
+- Follow-up visit after blood test results to review and adjust if needed.
+- Annual thyroid check once stable.
+
+Call the clinic if: racing heartbeat, chest pain, shakiness, or symptoms
+getting worse.
