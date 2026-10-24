@@ -199,72 +199,159 @@ def _split_instruction_timing(body: str) -> tuple:
         body, flags=re.IGNORECASE,
     )
     if m:
-        timing = m.group(1).strip().rstrip(".")
+        timing = m.group(1).strip()
+        # Stop the timing phrase at the first sentence end so trailing
+        # Qty / Refills text does not leak into it.
+        timing = re.split(r"(?<=\.)\s+(?=[A-Z])|\s+(?:Qty|Refills|Disp)\b",
+                          timing, maxsplit=1)[0].strip().rstrip(".")
     return body.strip(), timing
 
 
 def parse_care_plan_text(text: str, condition: str) -> list:
     """Basic (non-AI) reader for pasted prescription / care-plan text.
 
-    - Tracks section headings (Rx, Care instructions, Follow-up).
-    - Keeps each line's ORIGINAL wording in the instruction; copies any
-      timing phrase into timing.
-    - Classifies type by dose words / section / follow-up words.
-    - Reads a [PCOS] / [Thyroid] tag when present, else uses the selected
-      condition (or 'unknown' when 'Both' is selected).
+    - Skips header/metadata lines (before Rx / first medication, and
+      Patient / Date / Prescriber / DOB / Clinic / Signature / SAMPLE /
+      NOT A VALID lines).
+    - Merges a medication NAME line with the instruction lines directly
+      below it into ONE row (instruction = name + instruction wording,
+      timing = the timing phrase, condition = the tag on the name line).
+      Qty / Refills stay in the text but never make their own row.
+    - Keeps original wording; never guesses a dose or frequency.
+    - Reads a [PCOS] / [Thyroid] tag, else uses the selected condition
+      ('unknown' when 'Both' is selected).
     - Groups by timing words (twice-daily -> Morning AND Evening).
-    - Never drops a care-instruction line; never guesses a dose.
     """
     import re
 
-    if condition == "Both":
-        default_tag = "unknown"
-    elif condition in ("PCOS", "Thyroid"):
+    if condition in ("PCOS", "Thyroid"):
         default_tag = condition
     else:
         default_tag = "unknown"
 
+    def _strip_bullet(s: str) -> str:
+        return re.sub(r"^\s*(?:\d+[.)]|[-*•])\s*", "", s).strip()
+
+    def _is_metadata(s: str) -> bool:
+        low = s.lower()
+        if "sample" in low or "not a valid" in low:
+            return True
+        return bool(re.match(
+            r"^\s*(patient|date|prescriber|clinician|doctor|dob|clinic|"
+            r"signature|visit date|diagnosis|assessment)\b[:\s]",
+            s, flags=re.IGNORECASE,
+        ))
+
+    def _is_med_name(s: str) -> bool:
+        # A medication name line: has a dose unit or a tablet/capsule word,
+        # and is not itself an instruction ("Take ...", "Qty", "Refills").
+        low = s.lower()
+        if low.startswith(("take ", "qty", "refills", "sig", "disp")):
+            return False
+        return bool(re.search(r"\b(mg|mcg|iu)\b", low)) or any(
+            w in low for w in ["tablet", "capsule", "pill"]
+        )
+
+    def _read_tag(s: str):
+        m = re.search(r"\[(pcos|thyroid)\]", s, flags=re.IGNORECASE)
+        if not m:
+            return None, s
+        tag = "PCOS" if m.group(1).lower() == "pcos" else "Thyroid"
+        cleaned = re.sub(r"\s*\[(?:pcos|thyroid)\]\s*", " ", s,
+                         flags=re.IGNORECASE).strip()
+        return tag, cleaned
+
+    lines = [ln.rstrip() for ln in text.splitlines()]
     items = []
-    section = ""  # "rx" | "care" | "followup" | ""
-    for raw in text.splitlines():
+    section = ""          # "rx" | "care" | "followup" | ""
+    seen_rx = False
+    pending = None        # medication row being built across lines
+
+    def _flush():
+        nonlocal pending
+        if pending is None:
+            return
+        instruction = " ".join(p for p in pending["parts"] if p).strip()
+        _, timing = _split_instruction_timing(instruction)
+        items.append(_make_item(instruction, "medication", timing,
+                                pending["tag"]))
+        pending = None
+
+    for raw in lines:
         line = raw.strip()
         if not line:
             continue
 
         low = line.lower().rstrip(":")
-        if low in _RX_HEADING or low.startswith("rx"):
-            section = "rx"
-            if low in _RX_HEADING or low == "rx":
-                continue
-        if any(low == h or low.startswith(h) for h in _CARE_HEADING):
-            section = "care"
-            if low in _CARE_HEADING:
-                continue
-        if any(low == h or low.startswith(h) for h in _FOLLOWUP_HEADING):
-            section = "followup"
-            if low in _FOLLOWUP_HEADING:
-                continue
 
-        # Strip a leading number/bullet but keep the body wording intact.
-        body = re.sub(r"^\s*(?:\d+[.)]|[-*•])\s*", "", line).strip()
+        # Section headings.
+        if low in _RX_HEADING or low == "rx":
+            _flush()
+            section = "rx"
+            seen_rx = True
+            continue
+        if any(low == h or low.startswith(h) for h in _CARE_HEADING):
+            _flush()
+            section = "care"
+            seen_rx = True  # care section also means header block is over
+            continue
+        if any(low == h or low.startswith(h) for h in _FOLLOWUP_HEADING):
+            _flush()
+            section = "followup"
+            seen_rx = True
+            continue
+
+        # Header / metadata: drop before Rx or first medication, and always
+        # for the labelled metadata lines.
+        if _is_metadata(line):
+            continue
+
+        body = _strip_bullet(line)
         if not body:
             continue
-        # Skip pure heading lines we already consumed.
-        if body.lower().rstrip(":") in (_RX_HEADING + _CARE_HEADING + _FOLLOWUP_HEADING):
+
+        tag, body_notag = _read_tag(body)
+
+        # Before the Rx heading and before any medication, skip everything
+        # that is not itself a medication name line.
+        if not seen_rx and section == "" and not _is_med_name(body_notag):
             continue
 
-        # Condition tag like [PCOS] / [Thyroid].
-        tag = default_tag
-        mtag = re.search(r"\[(pcos|thyroid)\]", body, flags=re.IGNORECASE)
-        if mtag:
-            tag = "PCOS" if mtag.group(1).lower() == "pcos" else "Thyroid"
-            body = re.sub(r"\s*\[(?:pcos|thyroid)\]\s*", " ", body,
-                          flags=re.IGNORECASE).strip()
+        # Medication NAME line -> start a new merged row.
+        if (section in ("rx", "") and _is_med_name(body_notag)):
+            _flush()
+            pending = {"parts": [body_notag], "tag": tag or default_tag}
+            if not seen_rx:
+                seen_rx = True
+            continue
 
-        kind = "follow-up" if section == "followup" else _classify_line(body, section)
-        instruction, timing = _split_instruction_timing(body)
-        items.append(_make_item(instruction, kind, timing, tag))
+        # Instruction / Qty / Refills line under a medication -> merge in.
+        if pending is not None and section in ("rx", "") and (
+            body_notag.lower().startswith(("take ", "qty", "refills", "sig", "disp"))
+            or re.search(r"\b(once|twice|daily|morning|evening|night|dinner|"
+                         r"breakfast|bedtime|empty stomach|with food)\b",
+                         body_notag, flags=re.IGNORECASE)
+        ):
+            if tag and pending["tag"] in (None, "unknown"):
+                pending["tag"] = tag
+            pending["parts"].append(body_notag)
+            continue
 
+        # Any other line closes a pending medication row first.
+        _flush()
+
+        if section == "followup" or any(
+            w in body_notag.lower()
+            for w in ["blood test", "lab test", "follow-up", "follow up",
+                      "appointment", "visit", "referral", "repeat thyroid"]
+        ):
+            items.append(_make_item(body_notag, "follow-up", "",
+                                    tag or default_tag))
+        else:
+            items.append(_make_item(body_notag, "habit", "",
+                                    tag or default_tag))
+
+    _flush()
     return items
 
 
@@ -475,8 +562,12 @@ def page_care_plan(condition: str, thyroid_subtype: str) -> None:
         draft_df = pd.DataFrame(rows)
 
         def _hl(row):
-            color = "background-color: #f6d6d6" if row["status"] == "Needs review" else ""
-            return [color] * len(row)
+            if row["status"] == "Needs review":
+                style = ("background-color: #fdecec; color: #5a1a1a; "
+                         "border: 1px solid #e0a0a0")
+            else:
+                style = ""
+            return [style] * len(row)
 
         st.caption(
             "Highlighted rows need review. Groups accepts more than one, "
