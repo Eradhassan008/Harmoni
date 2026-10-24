@@ -494,6 +494,16 @@ def inject_theme() -> None:
             color: #ffffff !important;
           }
           .stButton > button *, .stDownloadButton > button * { color: #ffffff !important; }
+          /* Disabled buttons: readable grey text on light grey (overrides the
+             forced white above). */
+          .stButton > button:disabled, .stButton > button[disabled],
+          .stDownloadButton > button:disabled, .stDownloadButton > button[disabled] {
+            background: #ECE8F0 !important; color: #6B6478 !important;
+          }
+          .stButton > button:disabled *, .stButton > button[disabled] *,
+          .stDownloadButton > button:disabled *, .stDownloadButton > button[disabled] * {
+            color: #6B6478 !important;
+          }
           /* Exception: the light-colored Home tiles keep their purple label. */
           .harmoni-tilewrap .stButton > button,
           .harmoni-tilewrap .stButton > button:hover,
