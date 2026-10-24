@@ -423,6 +423,87 @@ def _records_for_period(metrics: dict) -> list:
     return rows
 
 
+def _date_only(value) -> str:
+    """Return a date string with no time part. Falls back to the raw text."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        # Not a parseable date: drop any trailing time by cutting at a space.
+        return text.split(" ")[0]
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _group_care_tasks(care_tasks) -> dict:
+    """Group care items into Morning / Evening / Weekly / Upcoming.
+
+    Each item is a dict carrying a ``categories`` list (e.g. ["Morning"]) and
+    a ``condition`` tag. An item may appear in more than one group. Returns an
+    empty dict when nothing usable is passed. Original wording is preserved.
+    """
+    groups: dict = {"Morning": [], "Evening": [], "Weekly": [], "Upcoming": []}
+    if not care_tasks:
+        return {}
+
+    for item in care_tasks:
+        if not isinstance(item, dict):
+            continue
+        cats = item.get("categories") or []
+        if isinstance(cats, str):
+            cats = [cats]
+        placed = False
+        for cat in cats:
+            name = str(cat).strip().lower()
+            if name.startswith("morning"):
+                groups["Morning"].append(item)
+                placed = True
+            elif name.startswith("evening") or name.startswith("night"):
+                groups["Evening"].append(item)
+                placed = True
+            elif name.startswith("weekly"):
+                groups["Weekly"].append(item)
+                placed = True
+            elif name.startswith("upcoming") or name.startswith("appointment"):
+                groups["Upcoming"].append(item)
+                placed = True
+        if not placed:
+            groups["Morning"].append(item)
+
+    return {k: v for k, v in groups.items() if v}
+
+
+def _recent_notes(journal_entries, limit: int = 5) -> list:
+    """Return the latest ``limit`` journal entries that carry a note.
+
+    Sorted newest first when dates are present; otherwise keeps input order.
+    Never invents a note.
+    """
+    if not journal_entries:
+        return []
+
+    entries = [e for e in journal_entries if isinstance(e, dict)]
+    with_note = [
+        e for e in entries
+        if (e.get("note") or e.get("text") or "").strip()
+    ]
+    if not with_note:
+        return []
+
+    def sort_key(e):
+        parsed = pd.to_datetime(str(e.get("date", "")), errors="coerce")
+        return parsed if not pd.isna(parsed) else pd.Timestamp.min
+
+    try:
+        with_note = sorted(with_note, key=sort_key, reverse=True)
+    except Exception:
+        pass
+
+    return with_note[:limit]
+
+
 def make_doctor_pdf(
     metrics: dict,
     care_tasks=None,
@@ -461,6 +542,10 @@ def make_doctor_pdf(
     story = []
 
     story.append(Paragraph("Harmoni report", styles["Title"]))
+    story.append(Paragraph(
+        "Patient: Aisha K. (fictional) - PCOS + Hypothyroidism",
+        styles["Normal"],
+    ))
     rng = (metrics or {}).get("date_range", {})
     if rng.get("start") and rng.get("end"):
         story.append(Paragraph(f"Period: {rng['start']} to {rng['end']}", styles["Normal"]))
@@ -477,13 +562,15 @@ def make_doctor_pdf(
         header = ["Week", "Tasks done", "Tasks total", "Adherence %", "Avg fatigue", "Avg acne"]
         table_data = [header]
         for r in rows:
+            fatigue_1dp = _round(r["avg_fatigue_1to5"], 1)
+            acne_1dp = _round(r["avg_acne_1to5"], 1)
             table_data.append([
                 r["week"],
                 "" if r["tasks_done"] is None else str(int(r["tasks_done"])),
                 "" if r["tasks_total"] is None else str(int(r["tasks_total"])),
                 "" if r["adherence_pct"] is None else str(r["adherence_pct"]),
-                "" if r["avg_fatigue_1to5"] is None else str(r["avg_fatigue_1to5"]),
-                "" if r["avg_acne_1to5"] is None else str(r["avg_acne_1to5"]),
+                "" if fatigue_1dp is None else str(fatigue_1dp),
+                "" if acne_1dp is None else str(acne_1dp),
             ])
         table = Table(table_data, repeatRows=1)
         table.setStyle(TableStyle([
@@ -497,16 +584,25 @@ def make_doctor_pdf(
     else:
         story.append(Paragraph("Not enough data yet.", styles["Normal"]))
 
-    # Cycle lengths.
+    # Cycle lengths. Dates show without time; the last (ongoing) cycle has
+    # no recorded length, so it is labelled "ongoing".
     cycles = (metrics or {}).get("cycles", {})
     if cycles.get("lengths"):
         story.append(Spacer(1, 0.2 * inch))
         story.append(Paragraph("Recorded cycles", styles["Heading3"]))
         cyc_data = [["Cycle start", "Length (days)"]]
-        for c in cycles["lengths"]:
+        lengths = cycles["lengths"]
+        last_index = len(lengths) - 1
+        for idx, c in enumerate(lengths):
+            length_val = c.get("length_days")
+            if length_val is None:
+                # No length recorded: the current cycle has not ended yet.
+                length_text = "ongoing" if idx == last_index else ""
+            else:
+                length_text = str(_round(length_val, 1))
             cyc_data.append([
-                c.get("cycle_start") or "",
-                "" if c.get("length_days") is None else str(c["length_days"]),
+                _date_only(c.get("cycle_start")),
+                length_text,
             ])
         cyc_table = Table(cyc_data, repeatRows=1)
         cyc_table.setStyle(TableStyle([
@@ -516,15 +612,65 @@ def make_doctor_pdf(
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
         ]))
         story.append(cyc_table)
+        avg_len = cycles.get("average_length_days")
+        if avg_len is not None:
+            story.append(Spacer(1, 0.05 * inch))
+            story.append(Paragraph(
+                f"Average completed cycle length: {_round(avg_len, 1)} days "
+                "(ongoing cycle excluded).",
+                styles["Normal"],
+            ))
 
-    # --- AI observations placeholder ------------------------------------
+    # --- Current care plan ----------------------------------------------
+    # Grouped Morning / Evening / Weekly / Upcoming, each item tagged with
+    # its condition. Original instruction wording is preserved verbatim.
+    care_groups = _group_care_tasks(care_tasks)
+    if care_groups:
+        story.append(Spacer(1, 0.25 * inch))
+        story.append(Paragraph("Current care plan", styles["Heading2"]))
+        for group_name in ("Morning", "Evening", "Weekly", "Upcoming"):
+            items = care_groups.get(group_name)
+            if not items:
+                continue
+            story.append(Spacer(1, 0.1 * inch))
+            story.append(Paragraph(group_name, styles["Heading3"]))
+            for item in items:
+                instruction = item.get("instruction") or ""
+                condition = (item.get("condition") or "").strip()
+                tag = f" [{condition}]" if condition else ""
+                story.append(Paragraph(f"- {instruction}{tag}", styles["Normal"]))
+
+    # --- Recent notes (latest 5 journal entries) ------------------------
+    recent_notes = _recent_notes(journal_entries, limit=5)
+    if recent_notes:
+        story.append(Spacer(1, 0.25 * inch))
+        story.append(Paragraph("Recent notes", styles["Heading2"]))
+        for note in recent_notes:
+            date_text = _date_only(note.get("date"))
+            body = (note.get("note") or note.get("text") or "").strip()
+            prefix = f"{date_text}: " if date_text else ""
+            story.append(Paragraph(f"- {prefix}{body}", styles["Normal"]))
+
+    # --- AI observations -------------------------------------------------
     story.append(Spacer(1, 0.3 * inch))
     story.append(Paragraph("AI observations", styles["Heading2"]))
+    if summary and summary.strip():
+        story.append(Paragraph("AI-generated summary:", styles["Italic"]))
+        story.append(Paragraph(summary.strip(), styles["Normal"]))
+    else:
+        story.append(Paragraph(
+            "This section is a placeholder. AI observations are not yet generated. "
+            "This report contains only the records you logged and makes no diagnosis "
+            "or treatment recommendation.",
+            styles["Normal"],
+        ))
+
+    # --- Footer ----------------------------------------------------------
+    story.append(Spacer(1, 0.3 * inch))
     story.append(Paragraph(
-        "This section is a placeholder. AI observations are not yet generated. "
-        "This report contains only the records you logged and makes no diagnosis "
-        "or treatment recommendation.",
-        styles["Normal"],
+        "Synthetic demo data. Not medical advice. "
+        "Prepared from patient-logged records.",
+        styles["Italic"],
     ))
 
     doc.build(story)
