@@ -405,25 +405,57 @@ def inject_theme() -> None:
           :root {
             --harmoni-lavender: #cdb4f6;
             --harmoni-lavender-soft: #ede7fb;
+            --harmoni-pink: #f3c6d6;
+            --harmoni-pink-soft: #fbe7ef;
             --harmoni-sage: #a8c3a0;
             --harmoni-sage-soft: #e4efe0;
+            --harmoni-peach-soft: #fdecd8;
             --harmoni-ink: #2f2a3a;
+            --harmoni-plum: #6b4e8f;
           }
+          /* Soft page background like the mockup */
+          .stApp {
+            background: linear-gradient(160deg, #f6f1fb 0%, #fbeef4 55%, #f3f7f0 100%);
+          }
+          .block-container { padding-top: 1.5rem; }
+
+          /* Sidebar: soft lavender, rounded pill menu */
+          section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f3ecfb 0%, #fbeef4 100%);
+          }
+          section[data-testid="stSidebar"] img {
+            display: block; margin: 0.25rem auto 0.5rem auto;
+          }
+          section[data-testid="stSidebar"] [role="radiogroup"] > label {
+            background: transparent;
+            border-radius: 14px;
+            padding: 0.55rem 0.9rem;
+            margin-bottom: 0.25rem;
+            transition: background 0.15s ease;
+            font-weight: 600;
+            color: var(--harmoni-ink);
+          }
+          section[data-testid="stSidebar"] [role="radiogroup"] > label:hover {
+            background: #ffffffaa;
+          }
+
+          /* White rounded cards with soft shadow */
           .harmoni-card {
-            background: var(--harmoni-lavender-soft);
-            border: 1px solid var(--harmoni-lavender);
-            border-radius: 16px;
-            padding: 1.1rem 1.25rem;
+            background: #ffffff;
+            border: 1px solid #eee3f6;
+            border-radius: 20px;
+            padding: 1.2rem 1.35rem;
             margin-bottom: 1rem;
             color: var(--harmoni-ink);
+            box-shadow: 0 6px 20px rgba(107, 78, 143, 0.08);
           }
           .harmoni-card.sage {
             background: var(--harmoni-sage-soft);
             border-color: var(--harmoni-sage);
           }
           .harmoni-title {
-            color: var(--harmoni-ink);
-            font-weight: 700;
+            color: var(--harmoni-plum);
+            font-weight: 800;
             margin-bottom: 0.1rem;
           }
           .harmoni-tagline {
@@ -431,6 +463,48 @@ def inject_theme() -> None:
             opacity: 0.75;
             margin-top: 0;
           }
+
+          /* Welcome header */
+          .harmoni-welcome h1 {
+            color: var(--harmoni-plum);
+            font-weight: 800;
+            margin-bottom: 0.1rem;
+          }
+          .harmoni-welcome p { color: var(--harmoni-ink); opacity: 0.75; margin-top: 0; }
+
+          /* Quick-action tiles */
+          .harmoni-tile {
+            border-radius: 18px;
+            padding: 1rem 1.1rem;
+            color: var(--harmoni-ink);
+            box-shadow: 0 6px 18px rgba(107, 78, 143, 0.08);
+            min-height: 92px;
+          }
+          .harmoni-tile .label { font-size: 0.8rem; opacity: 0.7; }
+          .harmoni-tile .name { font-size: 1.1rem; font-weight: 800; color: var(--harmoni-plum); }
+          .tile-lav  { background: var(--harmoni-lavender-soft); }
+          .tile-sage { background: var(--harmoni-sage-soft); }
+          .tile-blue { background: #e6ecfb; }
+          .tile-peach{ background: var(--harmoni-peach-soft); }
+
+          /* Stat chips (quick summary) */
+          .harmoni-stat {
+            border-radius: 16px; padding: 0.85rem 1rem; text-align: left;
+            box-shadow: 0 4px 14px rgba(107, 78, 143, 0.06);
+          }
+          .harmoni-stat .big { font-size: 1.5rem; font-weight: 800; color: var(--harmoni-plum); }
+          .harmoni-stat .unit { font-size: 0.85rem; opacity: 0.7; }
+
+          /* Big metric number (health at a glance / cycle) */
+          .harmoni-big-metric { text-align: center; }
+          .harmoni-big-metric .pct { font-size: 2.6rem; font-weight: 800; color: var(--harmoni-plum); }
+          .harmoni-big-metric .sub { opacity: 0.7; }
+
+          /* Check list rows */
+          .harmoni-row { display: flex; justify-content: space-between; padding: 0.3rem 0; }
+          .harmoni-row .tick { color: var(--harmoni-sage); font-weight: 800; }
+          .harmoni-row .pending { color: #c9b8dd; font-weight: 800; }
+
           .harmoni-footer {
             margin-top: 2.5rem;
             padding-top: 0.75rem;
@@ -1248,6 +1322,179 @@ def page_json_backup() -> None:
         st.success(f"Restored {restored} record group(s) from the backup.")
 
 
+def _home_metrics(daily_log, cycles):
+    """Build metrics safely for the Home dashboard. Returns {} on any problem."""
+    try:
+        daily_log, cycles = _ensure_history(daily_log, cycles)
+        return analytics.build_metrics(
+            daily_log, cycles,
+            task_logs=st.session_state.get("task_logs") or [],
+            journal_entries=st.session_state.get("journal_entries") or [],
+        )
+    except Exception:
+        return {}
+
+
+def page_home(daily_log, cycles, condition: str) -> None:
+    """Dashboard overview page, styled to match the Harmoni mockup.
+
+    Uses real metrics from analytics.build_metrics. Every number is read
+    from the data; nothing is invented. Cards degrade gracefully when a
+    value is missing.
+    """
+    metrics = _home_metrics(daily_log, cycles)
+    weekly = metrics.get("weekly", {}) if metrics else {}
+
+    # Latest weekly adherence -> overall adherence %.
+    adh_list = weekly.get("adherence", [])
+    latest_adh = next(
+        (w["adherence"] for w in reversed(adh_list) if w.get("adherence") is not None),
+        None,
+    )
+    adh_pct = round(latest_adh * 100) if latest_adh is not None else None
+
+    today = dt.date.today().strftime("%b %d, %Y")
+
+    # --- Welcome header ------------------------------------------------
+    hc, dc = st.columns([3, 1])
+    with hc:
+        st.markdown(
+            f'<div class="harmoni-welcome"><h1>Welcome back, Erad 👋</h1>'
+            f'<p>Your personalized health companion for PCOS, thyroid & overall wellness.</p></div>',
+            unsafe_allow_html=True,
+        )
+    with dc:
+        st.markdown(
+            f'<div class="harmoni-card" style="text-align:center;padding:0.7rem;">'
+            f'📅 Today, {today}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # --- Quick-action tiles -------------------------------------------
+    t1, t2, t3, t4 = st.columns(4)
+    tiles = [
+        (t1, "tile-lav", "Continue", "Care Plan"),
+        (t2, "tile-sage", "Log", "Daily Journal"),
+        (t3, "tile-blue", "View", "Insights"),
+        (t4, "tile-peach", "Doctor", "Summary"),
+    ]
+    for col, css, label, name in tiles:
+        with col:
+            st.markdown(
+                f'<div class="harmoni-tile {css}"><div class="label">{label}</div>'
+                f'<div class="name">{name} →</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.write("")
+
+    # --- Row: Health at a glance | Cycle tracker | My conditions ------
+    g1, g2, g3 = st.columns(3)
+
+    with g1:
+        glance = (
+            f'<div class="harmoni-big-metric"><div class="pct">'
+            f'{adh_pct if adh_pct is not None else "--"}%</div>'
+            f'<div class="sub">Overall Adherence</div></div>'
+        )
+        # Latest fatigue/acne as plain read-outs (no invented deltas).
+        fat = weekly.get("fatigue", [])
+        acne = weekly.get("acne", [])
+        recent_fat = next((w["avg_fatigue_1to5"] for w in reversed(fat)
+                           if w.get("avg_fatigue_1to5") is not None), None)
+        recent_acne = next((w["avg_acne_1to5"] for w in reversed(acne)
+                            if w.get("avg_acne_1to5") is not None), None)
+        reads = "<ul style='margin:0.5rem 0 0 0;padding-left:1.1rem;'>"
+        if recent_fat is not None:
+            reads += f"<li>Fatigue (latest week): {recent_fat} / 5</li>"
+        if recent_acne is not None:
+            reads += f"<li>Acne (latest week): {recent_acne} / 5</li>"
+        reads += "</ul>"
+        st.markdown(
+            f'<div class="harmoni-card"><div class="harmoni-title">Your Health at a Glance</div>'
+            f'{glance}{reads}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with g2:
+        cyc = metrics.get("cycles", {}) if metrics else {}
+        avg_len = cyc.get("average_length_days")
+        count = cyc.get("count", 0)
+        st.markdown(
+            f'<div class="harmoni-card"><div class="harmoni-title">Cycle Tracker</div>'
+            f'<div class="harmoni-big-metric"><div class="pct" style="color:#d96a9a;">🩸</div>'
+            f'<div class="sub">'
+            f'{count} cycle(s) recorded'
+            + (f'<br>average {avg_len} days' if avg_len is not None else '')
+            + '</div></div></div>',
+            unsafe_allow_html=True,
+        )
+
+    with g3:
+        rows = [
+            ("Manage symptoms", True),
+            ("Track cycle & hormones", True),
+            ("Lifestyle & diet guidance", True),
+            ("Medication & supplement plan", True),
+        ]
+        items = ""
+        for label, done in rows:
+            items += (f'<div class="harmoni-row"><span>{label}</span>'
+                      f'<span class="tick">✓</span></div>')
+        st.markdown(
+            f'<div class="harmoni-card"><div class="harmoni-title">My Conditions '
+            f'({condition})</div>{items}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # --- Row: Health trends | Today's care plan -----------------------
+    b1, b2 = st.columns([2, 1])
+
+    with b1:
+        st.markdown('<div class="harmoni-title">Health Trends (last weeks)</div>',
+                    unsafe_allow_html=True)
+        by_week = {}
+        for w in weekly.get("fatigue", []):
+            by_week.setdefault(w["week"], {})["Fatigue"] = w.get("avg_fatigue_1to5")
+        for w in weekly.get("acne", []):
+            by_week.setdefault(w["week"], {})["Acne"] = w.get("avg_acne_1to5")
+        for w in adh_list:
+            by_week.setdefault(w["week"], {})["Adherence %/20"] = (
+                round(w["adherence"] * 5, 2) if w.get("adherence") is not None else None
+            )
+        if by_week:
+            trend_df = pd.DataFrame(
+                [{"week": wk, **vals} for wk, vals in sorted(by_week.items())]
+            ).set_index("week")
+            st.line_chart(trend_df, height=260)
+        else:
+            st.info("Log a few days to see your trends.")
+
+    with b2:
+        care_tasks = st.session_state.get("care_tasks") or []
+        done = sum(1 for t in care_tasks if t.get("status") == "OK")
+        total = len(care_tasks)
+        head = f"{done} of {total} confirmed" if total else "No care plan yet"
+        rows_html = ""
+        if care_tasks:
+            for t in care_tasks[:5]:
+                ok = t.get("status") == "OK"
+                mark = ('<span class="tick">✓</span>' if ok
+                        else '<span class="pending">○</span>')
+                instr = (t.get("instruction") or "")[:48]
+                rows_html += (f'<div class="harmoni-row"><span>{instr}</span>{mark}</div>')
+        else:
+            rows_html = ('<div class="harmoni-row"><span>Go to Care Plan to build '
+                         'your checklist.</span></div>')
+        st.markdown(
+            f'<div class="harmoni-card"><div class="harmoni-title">Today\'s Care Plan</div>'
+            f'<div style="opacity:0.7;font-size:0.85rem;margin-bottom:0.4rem;">{head}</div>'
+            f'{rows_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+
 # ----------------------------------------------------------------------
 # App shell.
 # ----------------------------------------------------------------------
@@ -1257,7 +1504,11 @@ def main() -> None:
     init_state()
 
     with st.sidebar:
-        st.markdown(f"### {APP_NAME}")
+        logo_path = Path(__file__).parent / "assets" / "logo.png"
+        if logo_path.exists():
+            st.image(str(logo_path), width=150)
+        else:
+            st.markdown(f"### {APP_NAME}")
         st.caption(TAGLINE)
 
         condition = st.radio(
@@ -1277,13 +1528,15 @@ def main() -> None:
         st.divider()
         destination = st.radio(
             "Go to",
-            options=["Care Plan", "Daily Journal", "Insights", "Doctor Summary", "Backup"],
+            options=["Home", "Care Plan", "Daily Journal", "Insights", "Doctor Summary", "Backup"],
         )
 
     daily_log = load_daily_log()
     cycles = load_cycles()
 
-    if destination == "Care Plan":
+    if destination == "Home":
+        page_home(daily_log, cycles, condition)
+    elif destination == "Care Plan":
         page_care_plan(condition, thyroid_subtype)
     elif destination == "Daily Journal":
         page_daily_journal()
