@@ -8,11 +8,15 @@ and is intentionally left as stubs for now.
 
 from pathlib import Path
 
+import datetime as dt
+import io
+import json
+
 import pandas as pd
 import streamlit as st
 
-import ai  # noqa: F401  (stub module, wired for later use)
-import analytics  # noqa: F401  (stub module, wired for later use)
+import ai  # shared AI adapter (call_ai)
+import analytics  # shared analytics module (build_metrics, summaries, exports)
 
 APP_NAME = "Harmoni"
 TAGLINE = "Two conditions. One plan."
@@ -804,31 +808,192 @@ def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
         st.warning("No data files found in data/. Add daily_log.csv and cycles.csv.")
         return
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(
-            f'<div class="harmoni-card">Daily log rows<br><b>{len(daily_log)}</b></div>',
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown(
-            f'<div class="harmoni-card sage">Cycles recorded<br><b>{len(cycles)}</b></div>',
-            unsafe_allow_html=True,
-        )
+    # Build chart-ready metrics from the shared analytics module.
+    metrics = analytics.build_metrics(
+        daily_log,
+        cycles,
+        task_logs=st.session_state.get("task_logs"),
+        journal_entries=st.session_state.get("journal_entries"),
+    )
 
-    st.markdown("**Daily log** (first rows)")
-    st.dataframe(daily_log.head(10), use_container_width=True)
-    st.caption("Columns: " + ", ".join(daily_log.columns))
+    if not metrics.get("has_data"):
+        st.info("Not enough logged data yet to show trends.")
+        for n in metrics.get("notes", []):
+            st.caption(n)
+        return
 
-    st.markdown("**Cycles**")
-    st.dataframe(cycles, use_container_width=True)
+    rng = metrics.get("date_range", {})
+    if rng.get("start") and rng.get("end"):
+        st.caption(f"Showing {metrics['day_count']} day(s): {rng['start']} to {rng['end']}")
 
-    st.info("Charts and metrics come next; data is now wired in.")
+    # --- Weekly task adherence -------------------------------------
+    adh = metrics["weekly"]["adherence"]
+    if adh:
+        st.markdown("### Weekly task adherence")
+        adh_df = pd.DataFrame(
+            [{"week": w["week"],
+              "adherence %": round(w["adherence"] * 100) if w["adherence"] is not None else None}
+             for w in adh]
+        ).set_index("week")
+        st.line_chart(adh_df)
+
+    # --- Fatigue & acne trends -------------------------------------
+    fat = metrics["weekly"]["fatigue"]
+    acne = metrics["weekly"]["acne"]
+    if fat or acne:
+        st.markdown("### Fatigue and acne trends (1-5)")
+        by_week = {}
+        for w in fat:
+            by_week.setdefault(w["week"], {})["fatigue"] = w["avg_fatigue_1to5"]
+        for w in acne:
+            by_week.setdefault(w["week"], {})["acne"] = w["avg_acne_1to5"]
+        trend_df = pd.DataFrame(
+            [{"week": wk, **vals} for wk, vals in sorted(by_week.items())]
+        ).set_index("week")
+        st.line_chart(trend_df)
+
+    # --- Menstrual cycle lengths -----------------------------------
+    cyc = metrics["cycles"]
+    if cyc["lengths"]:
+        st.markdown("### Menstrual cycle lengths (days)")
+        done = [c for c in cyc["lengths"] if c["length_days"] is not None]
+        if done:
+            cyc_df = pd.DataFrame(
+                [{"cycle start": c["cycle_start"], "length (days)": c["length_days"]} for c in done]
+            ).set_index("cycle start")
+            st.bar_chart(cyc_df)
+        if cyc.get("average_length_days") is not None:
+            st.caption(f"Average cycle length: {cyc['average_length_days']} days "
+                       f"({cyc['count']} recorded; ongoing cycles excluded from the average).")
+
+    # --- My Health Summary -----------------------------------------
+    st.divider()
+    st.markdown("### My Health Summary")
+    summary = analytics.make_patient_summary(
+        metrics, journal_entries=st.session_state.get("journal_entries")
+    )
+    st.markdown(
+        f'<div class="harmoni-card sage">{summary}</div>',
+        unsafe_allow_html=True,
+    )
 
 
-def page_doctor_summary() -> None:
+def page_doctor_summary(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     st.subheader("Doctor Summary")
-    st.info("Doctor Summary content coming soon.")
+
+    if daily_log.empty and cycles.empty:
+        st.warning("No data files found in data/. Add daily_log.csv and cycles.csv.")
+        return
+
+    # --- Period filter: 30 days, 90 days, or all -------------------
+    period = st.radio(
+        "Report period",
+        options=["Last 30 days", "Last 90 days", "All data"],
+        horizontal=True,
+    )
+    days = {"Last 30 days": 30, "Last 90 days": 90, "All data": None}[period]
+
+    filtered = daily_log
+    if days is not None and not daily_log.empty and "date" in daily_log.columns:
+        dates = pd.to_datetime(daily_log["date"], errors="coerce")
+        cutoff = dates.max() - pd.Timedelta(days=days)
+        filtered = daily_log[dates > cutoff]
+
+    metrics = analytics.build_metrics(
+        filtered,
+        cycles,
+        task_logs=st.session_state.get("task_logs"),
+        journal_entries=st.session_state.get("journal_entries"),
+    )
+    summary = analytics.make_patient_summary(
+        metrics, journal_entries=st.session_state.get("journal_entries")
+    )
+    care_tasks = st.session_state.get("care_tasks", [])
+
+    # --- Report preview --------------------------------------------
+    st.markdown("### Report preview")
+    st.caption(f"Period: {period}")
+    st.markdown(f'<div class="harmoni-card">{summary}</div>', unsafe_allow_html=True)
+
+    adh = metrics["weekly"]["adherence"]
+    if adh:
+        prev_df = pd.DataFrame([
+            {"week": w["week"],
+             "adherence %": round(w["adherence"] * 100) if w["adherence"] is not None else None,
+             "tasks done": w["tasks_done"], "tasks total": w["tasks_total"]}
+            for w in adh
+        ])
+        st.dataframe(prev_df, use_container_width=True)
+    else:
+        st.info("No weekly records in this period.")
+
+    # --- Downloads -------------------------------------------------
+    st.markdown("### Download reports")
+    pdf_bytes = analytics.make_doctor_pdf(
+        metrics, care_tasks=care_tasks,
+        journal_entries=st.session_state.get("journal_entries"), summary=summary,
+    )
+    csv_bytes = analytics.make_doctor_csv(
+        metrics, care_tasks=care_tasks,
+        journal_entries=st.session_state.get("journal_entries"),
+    )
+    tag = {"Last 30 days": "30d", "Last 90 days": "90d", "All data": "all"}[period]
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "Download PDF", data=pdf_bytes,
+        file_name=f"harmoni_report_{tag}.pdf", mime="application/pdf",
+    )
+    c2.download_button(
+        "Download CSV", data=csv_bytes,
+        file_name=f"harmoni_report_{tag}.csv", mime="text/csv",
+    )
+
+
+def page_json_backup() -> None:
+    st.subheader("Backup and restore")
+    st.warning(
+        "Demo storage only - NOT secure medical storage. This saves the "
+        "app's in-session demo records (care tasks, journal entries, task logs, "
+        "cycle dates) to a plain JSON file on your own computer. Do not store real "
+        "medical data here."
+    )
+
+    # --- Download (backup) -----------------------------------------
+    st.markdown("### Save a backup")
+    backup = {
+        "care_tasks": st.session_state.get("care_tasks", []),
+        "care_draft": st.session_state.get("care_draft", []),
+        "task_logs": st.session_state.get("task_logs", []),
+        "journal_entries": st.session_state.get("journal_entries", []),
+        "cycle_dates": st.session_state.get("cycle_dates", []),
+        "_meta": {"app": APP_NAME, "kind": "demo-backup",
+                  "saved_at": dt.datetime.now().isoformat(timespec="seconds")},
+    }
+    st.download_button(
+        "Download backup (JSON)",
+        data=json.dumps(backup, indent=2).encode("utf-8"),
+        file_name="harmoni_demo_backup.json",
+        mime="application/json",
+    )
+
+    # --- Upload (restore) ------------------------------------------
+    st.markdown("### Restore from a backup")
+    up = st.file_uploader("Upload a Harmoni demo backup (JSON)", type=["json"])
+    if up is not None and st.button("Restore this backup", key="restore_json"):
+        try:
+            data = json.loads(up.getvalue().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            st.error("That file is not valid JSON. Nothing was changed.")
+            return
+        if not isinstance(data, dict):
+            st.error("That backup has the wrong shape. Nothing was changed.")
+            return
+        restored = 0
+        for key in ("care_tasks", "care_draft", "task_logs", "journal_entries", "cycle_dates"):
+            if isinstance(data.get(key), list):
+                st.session_state[key] = data[key]
+                restored += 1
+        st.success(f"Restored {restored} record group(s) from the backup.")
 
 
 # ----------------------------------------------------------------------
@@ -860,7 +1025,7 @@ def main() -> None:
         st.divider()
         destination = st.radio(
             "Go to",
-            options=["Care Plan", "Daily Journal", "Insights", "Doctor Summary"],
+            options=["Care Plan", "Daily Journal", "Insights", "Doctor Summary", "Backup"],
         )
 
     daily_log = load_daily_log()
@@ -873,7 +1038,9 @@ def main() -> None:
     elif destination == "Insights":
         page_insights(daily_log, cycles)
     elif destination == "Doctor Summary":
-        page_doctor_summary()
+        page_doctor_summary(daily_log, cycles)
+    elif destination == "Backup":
+        page_json_backup()
 
     render_footer()
 
