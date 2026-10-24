@@ -14,6 +14,7 @@ import json
 
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go  # styled charts (presentation only)
 
 import ai  # shared AI adapter (call_ai)
 import analytics  # shared analytics module (build_metrics, summaries, exports)
@@ -403,115 +404,154 @@ def inject_theme() -> None:
         """
         <style>
           :root {
-            --harmoni-lavender: #cdb4f6;
-            --harmoni-lavender-soft: #ede7fb;
-            --harmoni-pink: #f3c6d6;
-            --harmoni-pink-soft: #fbe7ef;
-            --harmoni-sage: #a8c3a0;
-            --harmoni-sage-soft: #e4efe0;
-            --harmoni-peach-soft: #fdecd8;
-            --harmoni-ink: #2f2a3a;
-            --harmoni-plum: #6b4e8f;
+            --h-bg: #F9F5FA;
+            --h-sidebar: #F3ECFA;
+            --h-card: #FFFFFF;
+            --h-heading: #674B86;
+            --h-body: #252139;
+            --h-secondary: #625B70;
+            --h-lavender: #B695D4;
+            --h-sage: #DDEDDC;
+            --h-blush: #F6DDE8;
+            --h-blue: #E5EEFA;
+            --h-border: #E9E1EE;
+            /* legacy aliases so existing markup keeps working */
+            --harmoni-lavender: #B695D4;
+            --harmoni-lavender-soft: #efe6f8;
+            --harmoni-pink: #F6DDE8;
+            --harmoni-pink-soft: #F6DDE8;
+            --harmoni-sage: #DDEDDC;
+            --harmoni-sage-soft: #DDEDDC;
+            --harmoni-peach-soft: #F6DDE8;
+            --harmoni-ink: #252139;
+            --harmoni-plum: #674B86;
           }
-          /* Soft page background like the mockup */
-          .stApp {
-            background: linear-gradient(160deg, #f6f1fb 0%, #fbeef4 55%, #f3f7f0 100%);
-          }
+
+          /* Solid light page background -- never depends on browser mode */
+          .stApp { background: var(--h-bg); }
           .block-container { padding-top: 1.5rem; }
 
-          /* Sidebar: soft lavender, rounded pill menu */
-          section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #f3ecfb 0%, #fbeef4 100%);
-          }
-          section[data-testid="stSidebar"] img {
-            display: block; margin: 0.25rem auto 0.5rem auto;
-          }
+          /* Global readable body text on light surfaces */
+          .stApp, .stApp p, .stApp li, .stApp span, .stApp label,
+          .stMarkdown, [data-testid="stMarkdownContainer"] { color: var(--h-body); }
+          .stApp h1, .stApp h2, .stApp h3, .stApp h4 { color: var(--h-heading); }
+          [data-testid="stCaptionContainer"], .stApp small { color: var(--h-secondary) !important; }
+
+          /* Sidebar: soft lavender, dark text */
+          section[data-testid="stSidebar"] { background: var(--h-sidebar); }
+          section[data-testid="stSidebar"] * { color: var(--h-body); }
+          section[data-testid="stSidebar"] img { display:block; margin:0.25rem auto 0.5rem auto; }
           section[data-testid="stSidebar"] [role="radiogroup"] > label {
-            background: transparent;
-            border-radius: 14px;
-            padding: 0.55rem 0.9rem;
-            margin-bottom: 0.25rem;
-            transition: background 0.15s ease;
-            font-weight: 600;
-            color: var(--harmoni-ink);
+            background: transparent; border-radius: 12px;
+            padding: 0.5rem 0.8rem; margin-bottom: 0.2rem;
+            transition: background 0.15s ease; font-weight: 600; color: var(--h-body);
           }
-          section[data-testid="stSidebar"] [role="radiogroup"] > label:hover {
-            background: #ffffffaa;
+          section[data-testid="stSidebar"] [role="radiogroup"] > label:hover { background: #ffffffcc; }
+          /* selected nav item -> purple highlight, readable */
+          section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) {
+            background: var(--h-heading); color: #ffffff;
           }
+          section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) * { color:#ffffff; }
+
+          /* Inputs / textareas / selects: white field, dark text, soft border */
+          .stTextInput input, .stTextArea textarea, .stNumberInput input,
+          [data-baseweb="select"] > div, [data-baseweb="input"] > div {
+            background: #ffffff !important; color: var(--h-body) !important;
+            border: 1px solid var(--h-border) !important; border-radius: 10px !important;
+          }
+          .stTextInput label, .stTextArea label, .stSelectbox label,
+          .stNumberInput label, .stRadio label, .stCheckbox label, .stFileUploader label {
+            color: var(--h-body) !important; font-weight: 600;
+          }
+          [data-baseweb="menu"], [data-baseweb="menu"] * { background:#ffffff !important; color: var(--h-body) !important; }
+
+          /* Tabs: readable labels, purple active underline */
+          .stTabs [data-baseweb="tab"] { color: var(--h-secondary); }
+          .stTabs [aria-selected="true"] { color: var(--h-heading); font-weight: 700; }
+          .stTabs [data-baseweb="tab-highlight"] { background: var(--h-heading); }
+
+          /* File uploader dropzone */
+          [data-testid="stFileUploaderDropzone"] {
+            background: var(--h-blue) !important; border: 1px dashed var(--h-lavender) !important;
+            color: var(--h-body) !important;
+          }
+          [data-testid="stFileUploaderDropzone"] * { color: var(--h-body) !important; }
+
+          /* Buttons: lavender fill, readable */
+          .stButton > button, .stDownloadButton > button {
+            background: var(--h-heading); color: #ffffff;
+            border: none; border-radius: 12px; font-weight: 600; padding: 0.5rem 1rem;
+          }
+          .stButton > button:hover, .stDownloadButton > button:hover { background: #553c73; color:#ffffff; }
+
+          /* Alerts: tinted, dark text (scoped -- does not touch charts/icons) */
+          [data-testid="stNotification"], .stAlert { color: var(--h-body) !important; border-radius: 12px; }
+
+          /* Dataframes / tables: light with dark text */
+          [data-testid="stTable"] td, [data-testid="stTable"] th,
+          [data-testid="stDataFrame"] { color: var(--h-body) !important; }
 
           /* White rounded cards with soft shadow */
           .harmoni-card {
-            background: #ffffff;
-            border: 1px solid #eee3f6;
-            border-radius: 20px;
-            padding: 1.2rem 1.35rem;
-            margin-bottom: 1rem;
-            color: var(--harmoni-ink);
-            box-shadow: 0 6px 20px rgba(107, 78, 143, 0.08);
+            background: var(--h-card); border: 1px solid var(--h-border);
+            border-radius: 20px; padding: 1.2rem 1.35rem; margin-bottom: 1rem;
+            color: var(--h-body); box-shadow: 0 6px 20px rgba(103, 75, 134, 0.08);
           }
-          .harmoni-card.sage {
-            background: var(--harmoni-sage-soft);
-            border-color: var(--harmoni-sage);
-          }
-          .harmoni-title {
-            color: var(--harmoni-plum);
-            font-weight: 800;
-            margin-bottom: 0.1rem;
-          }
-          .harmoni-tagline {
-            color: var(--harmoni-ink);
-            opacity: 0.75;
-            margin-top: 0;
-          }
+          .harmoni-card.sage { background: var(--h-sage); border-color: #c7e0c5; }
+          .harmoni-title { color: var(--h-heading); font-weight: 800; margin-bottom: 0.1rem; }
+          .harmoni-tagline { color: var(--h-secondary); margin-top: 0; }
 
-          /* Welcome header */
-          .harmoni-welcome h1 {
-            color: var(--harmoni-plum);
-            font-weight: 800;
-            margin-bottom: 0.1rem;
-          }
-          .harmoni-welcome p { color: var(--harmoni-ink); opacity: 0.75; margin-top: 0; }
+          .harmoni-welcome h1 { color: var(--h-heading); font-weight: 800; margin-bottom: 0.1rem; }
+          .harmoni-welcome p { color: var(--h-secondary); margin-top: 0; }
 
           /* Quick-action tiles */
           .harmoni-tile {
-            border-radius: 18px;
-            padding: 1rem 1.1rem;
-            color: var(--harmoni-ink);
-            box-shadow: 0 6px 18px rgba(107, 78, 143, 0.08);
-            min-height: 92px;
+            border-radius: 18px; padding: 1rem 1.1rem; color: var(--h-body);
+            box-shadow: 0 6px 18px rgba(103, 75, 134, 0.08); min-height: 92px;
           }
-          .harmoni-tile .label { font-size: 0.8rem; opacity: 0.7; }
-          .harmoni-tile .name { font-size: 1.1rem; font-weight: 800; color: var(--harmoni-plum); }
-          .tile-lav  { background: var(--harmoni-lavender-soft); }
-          .tile-sage { background: var(--harmoni-sage-soft); }
-          .tile-blue { background: #e6ecfb; }
-          .tile-peach{ background: var(--harmoni-peach-soft); }
+          .harmoni-tile .label { font-size: 0.8rem; color: var(--h-secondary); }
+          .harmoni-tile .name { font-size: 1.1rem; font-weight: 800; color: var(--h-heading); }
+          .tile-lav  { background: #efe6f8; }
+          .tile-sage { background: var(--h-sage); }
+          .tile-blue { background: var(--h-blue); }
+          .tile-peach{ background: var(--h-blush); }
 
-          /* Stat chips (quick summary) */
+          /* Tile-as-button: the whole colored card is clickable */
+          .harmoni-tilewrap { border-radius: 18px; margin-bottom: 0.2rem; }
+          .harmoni-tilewrap .stButton > button {
+            background: transparent; color: var(--h-heading);
+            border: 1px solid var(--h-border); border-radius: 18px;
+            min-height: 92px; font-weight: 800; white-space: pre-line;
+            text-align: left; padding: 1rem 1.1rem;
+            box-shadow: 0 6px 18px rgba(103, 75, 134, 0.08);
+          }
+          .harmoni-tilewrap.tile-lav  .stButton > button { background: #efe6f8; }
+          .harmoni-tilewrap.tile-sage .stButton > button { background: var(--h-sage); }
+          .harmoni-tilewrap.tile-blue .stButton > button { background: var(--h-blue); }
+          .harmoni-tilewrap.tile-peach .stButton > button { background: var(--h-blush); }
+          .harmoni-tilewrap .stButton > button:hover {
+            filter: brightness(0.97); color: var(--h-heading);
+          }
+
           .harmoni-stat {
             border-radius: 16px; padding: 0.85rem 1rem; text-align: left;
-            box-shadow: 0 4px 14px rgba(107, 78, 143, 0.06);
+            box-shadow: 0 4px 14px rgba(103, 75, 134, 0.06);
           }
-          .harmoni-stat .big { font-size: 1.5rem; font-weight: 800; color: var(--harmoni-plum); }
-          .harmoni-stat .unit { font-size: 0.85rem; opacity: 0.7; }
+          .harmoni-stat .big { font-size: 1.5rem; font-weight: 800; color: var(--h-heading); }
+          .harmoni-stat .unit { font-size: 0.85rem; color: var(--h-secondary); }
 
-          /* Big metric number (health at a glance / cycle) */
           .harmoni-big-metric { text-align: center; }
-          .harmoni-big-metric .pct { font-size: 2.6rem; font-weight: 800; color: var(--harmoni-plum); }
-          .harmoni-big-metric .sub { opacity: 0.7; }
+          .harmoni-big-metric .pct { font-size: 2.6rem; font-weight: 800; color: var(--h-heading); }
+          .harmoni-big-metric .sub { color: var(--h-secondary); }
 
-          /* Check list rows */
-          .harmoni-row { display: flex; justify-content: space-between; padding: 0.3rem 0; }
-          .harmoni-row .tick { color: var(--harmoni-sage); font-weight: 800; }
-          .harmoni-row .pending { color: #c9b8dd; font-weight: 800; }
+          .harmoni-row { display: flex; justify-content: space-between; padding: 0.3rem 0; color: var(--h-body); }
+          .harmoni-row .tick { color: #5a9e59; font-weight: 800; }
+          .harmoni-row .pending { color: var(--h-lavender); font-weight: 800; }
 
           .harmoni-footer {
-            margin-top: 2.5rem;
-            padding-top: 0.75rem;
-            border-top: 1px solid var(--harmoni-lavender);
-            color: var(--harmoni-ink);
-            opacity: 0.7;
-            font-size: 0.85rem;
+            margin-top: 2.5rem; padding-top: 0.75rem;
+            border-top: 1px solid var(--h-border);
+            color: var(--h-secondary); font-size: 0.85rem;
           }
         </style>
         """,
@@ -524,6 +564,97 @@ def render_footer() -> None:
         f'<div class="harmoni-footer">{FOOTER}</div>',
         unsafe_allow_html=True,
     )
+
+
+# ----------------------------------------------------------------------
+# Navigation helper (dashboard cards + sidebar stay in sync).
+# ----------------------------------------------------------------------
+NAV_PAGES = ["Home", "Care Plan", "Daily Journal", "Insights", "Doctor Summary"]
+
+
+def go_to(destination: str) -> None:
+    """Callback for dashboard buttons: set the page the sidebar radio reads."""
+    st.session_state["nav"] = destination
+    st.session_state["nav_radio"] = destination
+
+
+# ----------------------------------------------------------------------
+# Chart presentation helpers (Plotly). Presentation ONLY -- these never
+# change any number; they draw the values analytics.py already produced.
+# ----------------------------------------------------------------------
+_CHART_LAVENDER = "#B695D4"
+_CHART_SAGE = "#8FC58C"
+_CHART_BLUSH = "#E79AB8"
+_CHART_BLUE = "#7FA8DE"
+
+
+def _style_fig(fig, height=300):
+    """Apply the shared light, pastel, readable chart style."""
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#FFFFFF",
+        font=dict(color="#252139", size=13),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(color="#252139")),
+        hovermode="x unified",
+    )
+    fig.update_xaxes(showgrid=False, color="#252139", nticks=8,
+                     linecolor="#E9E1EE", tickangle=0)
+    fig.update_yaxes(showgrid=True, gridcolor="#EFE9F3", color="#252139",
+                     linecolor="#E9E1EE", zeroline=False)
+    return fig
+
+
+def chart_adherence(rows):
+    """Chart A: adherence % over time (0-100), lavender line."""
+    x = [r.get("week") for r in rows]
+    y = [r.get("adherence") for r in rows]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="lines+markers", name="Adherence",
+        line=dict(color=_CHART_LAVENDER, width=3), marker=dict(size=6),
+        fill="tozeroy", fillcolor="rgba(182,149,212,0.15)",
+        hovertemplate="%{x}<br>%{y:.0f}%<extra></extra>",
+    ))
+    fig.update_yaxes(range=[0, 100], ticksuffix="%")
+    return _style_fig(fig, 300)
+
+
+def chart_symptoms(fatigue_rows, acne_rows):
+    """Chart B: fatigue + acne on the shared 1-5 severity scale."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[r.get("week") for r in fatigue_rows],
+        y=[r.get("avg_fatigue_1to5") for r in fatigue_rows],
+        mode="lines+markers", name="Fatigue (1-5)",
+        line=dict(color=_CHART_BLUSH, width=3), marker=dict(size=6),
+        hovertemplate="%{x}<br>Fatigue %{y:.1f}/5<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[r.get("week") for r in acne_rows],
+        y=[r.get("avg_acne_1to5") for r in acne_rows],
+        mode="lines+markers", name="Acne (1-5)",
+        line=dict(color=_CHART_BLUE, width=3), marker=dict(size=6),
+        hovertemplate="%{x}<br>Acne %{y:.1f}/5<extra></extra>",
+    ))
+    fig.update_yaxes(range=[1, 5], dtick=1, title_text="Severity (1-5)")
+    return _style_fig(fig, 300)
+
+
+def chart_cycles(lengths):
+    """Chart C: completed cycle lengths in days (sage bars)."""
+    labels = [str(r.get("cycle_start")) for r in lengths]
+    values = [r.get("length_days") for r in lengths]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=labels, y=values, marker_color=_CHART_SAGE,
+        hovertemplate="Started %{x}<br>%{y:.0f} days<extra></extra>",
+    ))
+    fig.update_yaxes(title_text="Cycle length (days)")
+    return _style_fig(fig, 300)
+
 
 
 # ----------------------------------------------------------------------
@@ -1036,38 +1167,29 @@ def page_insights(daily_log: pd.DataFrame, cycles: pd.DataFrame) -> None:
     adh = metrics["weekly"]["adherence"]
     if adh:
         st.markdown("### Weekly task adherence")
-        adh_df = pd.DataFrame(
-            [{"week": w["week"],
-              "adherence %": round(w["adherence"] * 100) if w["adherence"] is not None else None}
-             for w in adh]
-        ).set_index("week")
-        st.line_chart(adh_df)
+        st.caption("How many of your planned care tasks were marked done each week.")
+        rows = [{"week": w["week"],
+                 "adherence": round(w["adherence"] * 100) if w["adherence"] is not None else None}
+                for w in adh]
+        st.plotly_chart(chart_adherence(rows), use_container_width=True)
 
     # --- Fatigue & acne trends -------------------------------------
     fat = metrics["weekly"]["fatigue"]
     acne = metrics["weekly"]["acne"]
     if fat or acne:
-        st.markdown("### Fatigue and acne trends (1-5)")
-        by_week = {}
-        for w in fat:
-            by_week.setdefault(w["week"], {})["fatigue"] = w["avg_fatigue_1to5"]
-        for w in acne:
-            by_week.setdefault(w["week"], {})["acne"] = w["avg_acne_1to5"]
-        trend_df = pd.DataFrame(
-            [{"week": wk, **vals} for wk, vals in sorted(by_week.items())]
-        ).set_index("week")
-        st.line_chart(trend_df)
+        st.markdown("### Fatigue and acne trends")
+        st.caption("Your logged severity each week, on the 1-5 scale you entered.")
+        st.plotly_chart(chart_symptoms(fat, acne), use_container_width=True)
 
     # --- Menstrual cycle lengths -----------------------------------
     cyc = metrics["cycles"]
     if cyc["lengths"]:
-        st.markdown("### Menstrual cycle lengths (days)")
+        st.markdown("### Menstrual cycle history")
         done = [c for c in cyc["lengths"] if c["length_days"] is not None]
         if done:
-            cyc_df = pd.DataFrame(
-                [{"cycle start": c["cycle_start"], "length (days)": c["length_days"]} for c in done]
-            ).set_index("cycle start")
-            st.bar_chart(cyc_df)
+            st.caption("Each bar is one completed cycle. Recorded period starts create "
+                       "the gaps between them, so four starts give three completed intervals.")
+            st.plotly_chart(chart_cycles(done), use_container_width=True)
         if cyc.get("average_length_days") is not None:
             st.caption(f"Average cycle length: {cyc['average_length_days']} days "
                        f"({cyc['count']} recorded; ongoing cycles excluded from the average).")
@@ -1391,21 +1513,21 @@ def page_home(daily_log, cycles, condition: str) -> None:
             unsafe_allow_html=True,
         )
 
-    # --- Quick-action tiles -------------------------------------------
+    # --- Quick-action tiles (real buttons, mockup look) ---------------
     t1, t2, t3, t4 = st.columns(4)
     tiles = [
-        (t1, "tile-lav", "Continue", "Care Plan"),
-        (t2, "tile-sage", "Log", "Daily Journal"),
-        (t3, "tile-blue", "View", "Insights"),
-        (t4, "tile-peach", "Doctor", "Summary"),
+        (t1, "tile-lav", "Continue", "Care Plan", "Care Plan"),
+        (t2, "tile-sage", "Log", "Daily Journal", "Daily Journal"),
+        (t3, "tile-blue", "View", "Insights", "Insights"),
+        (t4, "tile-peach", "Doctor", "Summary", "Doctor Summary"),
     ]
-    for col, css, label, name in tiles:
+    for col, css, label, name, dest in tiles:
         with col:
-            st.markdown(
-                f'<div class="harmoni-tile {css}"><div class="label">{label}</div>'
-                f'<div class="name">{name} →</div></div>',
-                unsafe_allow_html=True,
-            )
+            # The tile IS the button -- clicking the colored card navigates.
+            st.markdown(f'<div class="harmoni-tilewrap {css}">', unsafe_allow_html=True)
+            st.button(f"{label}\n\n{name} →", key=f"tile_{dest}",
+                      use_container_width=True, on_click=go_to, args=(dest,))
+            st.markdown('</div>', unsafe_allow_html=True)
 
     st.write("")
 
@@ -1416,7 +1538,7 @@ def page_home(daily_log, cycles, condition: str) -> None:
         glance = (
             f'<div class="harmoni-big-metric"><div class="pct">'
             f'{adh_pct if adh_pct is not None else "--"}%</div>'
-            f'<div class="sub">Overall Adherence</div></div>'
+            f'<div class="sub">Latest Weekly Adherence</div></div>'
         )
         # Latest fatigue/acne as plain read-outs (no invented deltas).
         fat = weekly.get("fatigue", [])
@@ -1436,6 +1558,8 @@ def page_home(daily_log, cycles, condition: str) -> None:
             f'{glance}{reads}</div>',
             unsafe_allow_html=True,
         )
+        st.button("View details →", key="vd_glance", use_container_width=True,
+                  on_click=go_to, args=("Insights",))
 
     with g2:
         cyc = metrics.get("cycles", {}) if metrics else {}
@@ -1450,23 +1574,30 @@ def page_home(daily_log, cycles, condition: str) -> None:
             + '</div></div></div>',
             unsafe_allow_html=True,
         )
+        st.button("View details →", key="vd_cycle", use_container_width=True,
+                  on_click=go_to, args=("Insights",))
 
     with g3:
         rows = [
-            ("Manage symptoms", True),
-            ("Track cycle & hormones", True),
-            ("Lifestyle & diet guidance", True),
-            ("Medication & supplement plan", True),
+            "Manage symptoms",
+            "Track cycle & hormones",
+            "Lifestyle & diet guidance",
+            "Medication & supplement plan",
         ]
         items = ""
-        for label, done in rows:
+        for label in rows:
             items += (f'<div class="harmoni-row"><span>{label}</span>'
-                      f'<span class="tick">✓</span></div>')
+                      f'<span class="pending">•</span></div>')
         st.markdown(
             f'<div class="harmoni-card"><div class="harmoni-title">My Conditions '
-            f'({condition})</div>{items}</div>',
+            f'({condition})</div>'
+            f'<div style="color:var(--h-secondary);font-size:0.82rem;margin-bottom:0.3rem;">'
+            f'Focus areas for your plan (not completion status)</div>'
+            f'{items}</div>',
             unsafe_allow_html=True,
         )
+        st.button("View care plan →", key="vd_cond", use_container_width=True,
+                  on_click=go_to, args=("Care Plan",))
 
     # --- Row: Health trends | Today's care plan -----------------------
     b1, b2 = st.columns([2, 1])
@@ -1474,34 +1605,27 @@ def page_home(daily_log, cycles, condition: str) -> None:
     with b1:
         st.markdown('<div class="harmoni-title">Health Trends (last weeks)</div>',
                     unsafe_allow_html=True)
-        by_week = {}
-        for w in weekly.get("fatigue", []):
-            by_week.setdefault(w["week"], {})["Fatigue"] = w.get("avg_fatigue_1to5")
-        for w in weekly.get("acne", []):
-            by_week.setdefault(w["week"], {})["Acne"] = w.get("avg_acne_1to5")
-        for w in adh_list:
-            by_week.setdefault(w["week"], {})["Adherence %/20"] = (
-                round(w["adherence"] * 5, 2) if w.get("adherence") is not None else None
-            )
-        if by_week:
-            trend_df = pd.DataFrame(
-                [{"week": wk, **vals} for wk, vals in sorted(by_week.items())]
-            ).set_index("week")
-            st.line_chart(trend_df, height=260)
+        st.caption("Fatigue and acne on the 1-5 scale. Adherence is shown separately above.")
+        fat = weekly.get("fatigue", [])
+        acne = weekly.get("acne", [])
+        if fat or acne:
+            st.plotly_chart(chart_symptoms(fat, acne), use_container_width=True)
         else:
             st.info("Log a few days to see your trends.")
+        st.button("See all insights →", key="vd_trends", use_container_width=True,
+                  on_click=go_to, args=("Insights",))
 
     with b2:
         care_tasks = st.session_state.get("care_tasks") or []
         done = sum(1 for t in care_tasks if t.get("status") == "OK")
         total = len(care_tasks)
-        head = f"{done} of {total} confirmed" if total else "No care plan yet"
+        head = f"{done} of {total} confirmed in your plan" if total else "No care plan yet"
         rows_html = ""
         if care_tasks:
             for t in care_tasks[:5]:
                 ok = t.get("status") == "OK"
-                mark = ('<span class="tick">✓</span>' if ok
-                        else '<span class="pending">○</span>')
+                mark = ('<span class="tick">confirmed</span>' if ok
+                        else '<span class="pending">under review</span>')
                 instr = (t.get("instruction") or "")[:48]
                 rows_html += (f'<div class="harmoni-row"><span>{instr}</span>{mark}</div>')
         else:
@@ -1509,7 +1633,8 @@ def page_home(daily_log, cycles, condition: str) -> None:
                          'your checklist.</span></div>')
         st.markdown(
             f'<div class="harmoni-card"><div class="harmoni-title">Today\'s Care Plan</div>'
-            f'<div style="opacity:0.7;font-size:0.85rem;margin-bottom:0.4rem;">{head}</div>'
+            f'<div style="color:var(--h-secondary);font-size:0.82rem;margin-bottom:0.4rem;">'
+            f'{head} &middot; these are your plan items, not today\'s completion</div>'
             f'{rows_html}</div>',
             unsafe_allow_html=True,
         )
@@ -1547,10 +1672,18 @@ def main() -> None:
             )
 
         st.divider()
+        if "nav" not in st.session_state:
+            st.session_state["nav"] = "Home"
+        # The radio's key (nav_radio) is what go_to() sets, so a dashboard
+        # button click and a sidebar click drive the same state.
+        current = st.session_state.get("nav", "Home")
         destination = st.radio(
             "Go to",
-            options=["Home", "Care Plan", "Daily Journal", "Insights", "Doctor Summary", "Backup"],
+            options=NAV_PAGES,
+            index=NAV_PAGES.index(current) if current in NAV_PAGES else 0,
+            key="nav_radio",
         )
+        st.session_state["nav"] = destination
 
     daily_log = load_daily_log()
     cycles = load_cycles()
@@ -1565,8 +1698,6 @@ def main() -> None:
         page_insights(daily_log, cycles)
     elif destination == "Doctor Summary":
         page_doctor_summary(daily_log, cycles)
-    elif destination == "Backup":
-        page_json_backup()
 
     render_footer()
 
